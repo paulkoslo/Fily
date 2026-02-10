@@ -1,4 +1,4 @@
-# Virtual Finder v1.0
+# fily, AI powered file management v1.0
 
 A local-first macOS desktop application that creates an intelligent, AI-organized virtual file browser. Virtual Finder indexes your files and presents them in a smart virtual folder structure without moving, renaming, or deleting your original files.
 
