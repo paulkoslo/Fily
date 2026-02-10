@@ -31,7 +31,7 @@ Virtual Finder solves the problem of disorganized files scattered across your sy
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/Fily.git
+git clone https://github.com/paulkoslo/Fily.git
 cd Fily
 
 # Install dependencies
@@ -39,6 +39,9 @@ npm install
 
 # Install desktop app dependencies
 cd apps/desktop && npm install && cd ../..
+
+# Rebuild native modules for Electron (required!)
+npm run rebuild
 
 # Generate environment file
 cp .env.example .env

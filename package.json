@@ -19,6 +19,7 @@
     "build:desktop": "cd apps/desktop && npm run build",
     "package": "npm run build && cd apps/desktop && npm run package",
     "start": "cd apps/desktop && npm run start",
+    "rebuild": "cd apps/desktop && electron-rebuild -f -w better-sqlite3 --version=27.3.0",
     "clean": "rm -rf node_modules packages/*/dist apps/*/dist apps/*/node_modules packages/*/node_modules",
     "benchmark": "npm run benchmark -w packages/core"
   },
