@@ -1,0 +1,30 @@
+{
+  "name": "virtual-finder",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first macOS desktop app for AI-organized virtual file browsing",
+  "author": "Virtual Finder Team",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*",
+    "apps/ui"
+  ],
+  "scripts": {
+    "dev": "npm run dev:ui & npm run dev:desktop",
+    "dev:ui": "npm run dev -w apps/ui",
+    "dev:desktop": "cd apps/desktop && npm run dev",
+    "build": "npm run build -w packages/core && npm run build -w apps/ui && cd apps/desktop && npm run build",
+    "build:core": "npm run build -w packages/core",
+    "build:ui": "npm run build -w apps/ui",
+    "build:desktop": "cd apps/desktop && npm run build",
+    "package": "npm run build && cd apps/desktop && npm run package",
+    "start": "cd apps/desktop && npm run start",
+    "clean": "rm -rf node_modules packages/*/dist apps/*/dist apps/*/node_modules packages/*/node_modules",
+    "benchmark": "npm run benchmark -w packages/core"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.2",
+    "electron-rebuild": "^3.2.9",
+    "typescript": "^5.3.3"
+  }
+}
