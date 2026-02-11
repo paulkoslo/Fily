@@ -1,4 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
+import { FileIcon } from './FileIcon';
+import { FolderIcon } from './FolderIcon';
 
 interface VirtualTreeViewProps {
   virtualTree: VirtualNode | null;
@@ -18,25 +20,6 @@ function formatFileSize(bytes: number): string {
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
-
-function getFileIcon(extension: string): string {
-  const ext = extension.toLowerCase();
-  if (['pdf'].includes(ext)) return '📕';
-  if (['doc', 'docx', 'odt', 'rtf'].includes(ext)) return '📝';
-  if (['txt', 'md'].includes(ext)) return '📄';
-  if (['xls', 'xlsx', 'csv', 'numbers'].includes(ext)) return '📊';
-  if (['ppt', 'pptx', 'key'].includes(ext)) return '📽️';
-  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'ico', 'bmp', 'tiff', 'heic'].includes(ext)) return '🖼️';
-  if (['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v'].includes(ext)) return '🎬';
-  if (['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a'].includes(ext)) return '🎵';
-  if (['zip', 'tar', 'gz', 'rar', '7z'].includes(ext)) return '📦';
-  if (['js', 'ts', 'jsx', 'tsx'].includes(ext)) return '📜';
-  if (['py'].includes(ext)) return '🐍';
-  if (['json', 'yaml', 'yml', 'xml'].includes(ext)) return '📋';
-  if (['html', 'css', 'scss'].includes(ext)) return '🌐';
-  return '📄';
-}
-
 
 export function VirtualTreeView({
   virtualTree,
@@ -178,7 +161,7 @@ export function VirtualTreeView({
           title={file.path}
         >
           <div className="file-name">
-            <span className="file-icon">{getFileIcon(file.extension)}</span>
+            <FileIcon extension={file.extension || ''} />
             <div className="file-name-content">
               <span className="file-name-text">{node.name}</span>
               {node.placement && node.placement.tags.length > 0 && (
@@ -229,9 +212,7 @@ export function VirtualTreeView({
           title={`${node.path}\nSingle-click to expand/collapse\nDouble-click to navigate`}
         >
           <div className="file-name">
-            <span className="file-icon folder-icon">
-              {isExpanded ? '📂' : '📁'}
-            </span>
+            <FolderIcon />
             <div className="file-name-content">
               <span className="file-name-text">{node.name}</span>
             </div>
@@ -321,7 +302,7 @@ export function VirtualTreeView({
                       title={file.path}
                     >
                       <div className="file-name">
-                        <span className="file-icon">{getFileIcon(file.extension)}</span>
+                        <FileIcon extension={file.extension || ''} />
                         <div className="file-name-content">
                           <span className="file-name-text">{child.name}</span>
                           {child.placement && child.placement.tags.length > 0 && (
@@ -365,7 +346,7 @@ export function VirtualTreeView({
                       title={`${child.path}\nDouble-click to open`}
                     >
                       <div className="file-name">
-                        <span className="file-icon folder-icon">📁</span>
+                        <FolderIcon />
                         <div className="file-name-content">
                           <span className="file-name-text">{child.name}</span>
                         </div>

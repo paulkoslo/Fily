@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { FileBrowser } from './components/FileBrowser';
+import { LibraryView } from './components/LibraryView';
+import { VirtualLibraryView } from './components/VirtualLibraryView';
 import { VirtualTreeView } from './components/VirtualTreeView';
 import { SearchInput } from './components/SearchInput';
 import { Settings } from './components/Settings';
@@ -27,6 +29,7 @@ function App() {
   const [watchingSourceIds, setWatchingSourceIds] = useState<Set<number>>(new Set());
   const refreshTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [viewMode, setViewMode] = useState<'filesystem' | 'virtual'>('filesystem');
+  const [layoutMode, setLayoutMode] = useState<'library' | 'list'>('library');
   const [virtualTree, setVirtualTree] = useState<VirtualNode | null>(null);
   const [currentVirtualPath, setCurrentVirtualPath] = useState<string>('/');
   const [isExtracting, setIsExtracting] = useState(false);
@@ -36,12 +39,14 @@ function App() {
   const [isOrganizing, setIsOrganizing] = useState(false);
   const [plannerProgress, setPlannerProgress] = useState<PlannerProgress | null>(null);
   const [isManualMenuOpen, setIsManualMenuOpen] = useState(false);
+  const [isLayoutMenuOpen, setIsLayoutMenuOpen] = useState(false);
   const [apiKeyStatus, setApiKeyStatus] = useState<ApiKeyStatus | null>(null);
   const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
   const [apiKeyModalError, setApiKeyModalError] = useState<string | null>(null);
   const [apiKeySettingsError, setApiKeySettingsError] = useState<string | null>(null);
   const [isSavingApiKey, setIsSavingApiKey] = useState(false);
   const [isApiKeyMutating, setIsApiKeyMutating] = useState(false);
+  const [statusBarPath, setStatusBarPath] = useState<string[]>([]);
 
   const loadSources = async () => {
     try {
@@ -242,11 +247,16 @@ function App() {
     loadWatchStatus();
   }, [sources]); // Reload when sources change
 
-  // Load theme from localStorage on mount
+  // Load theme from localStorage on mount (migrate old theme IDs to light/dark)
   useEffect(() => {
     const savedThemeId = localStorage.getItem('fily-theme');
-    if (savedThemeId && getAllThemeIds().includes(savedThemeId)) {
+    const validIds = getAllThemeIds();
+    if (savedThemeId && validIds.includes(savedThemeId)) {
       setCurrentThemeId(savedThemeId);
+    } else if (savedThemeId) {
+      // Migrate legacy themes: dark-modern, glass, bold, fluid, neon → dark; minimal → light
+      const darkLegacy = ['dark-modern', 'glass', 'bold', 'fluid', 'neon'];
+      setCurrentThemeId(darkLegacy.includes(savedThemeId) ? 'dark' : 'light');
     }
   }, []);
 
@@ -254,21 +264,12 @@ function App() {
   useEffect(() => {
     const theme = getTheme(currentThemeId);
     const root = document.documentElement;
-    const body = document.body;
-    
+
     // Apply CSS variables
     Object.entries(theme.variables).forEach(([key, value]) => {
       root.style.setProperty(key, value);
     });
     
-    // Apply body background for glass theme
-    if (currentThemeId === 'glass' && theme.variables['--body-bg']) {
-      body.style.background = theme.variables['--body-bg'];
-      body.style.backgroundAttachment = 'fixed';
-    } else {
-      body.style.background = '';
-      body.style.backgroundAttachment = '';
-    }
     
     // Apply theme className to app container
     const appElement = document.querySelector('.app');
@@ -315,6 +316,22 @@ function App() {
       loadContent(selectedSourceId, currentPath, searchQuery);
     }
   }, [selectedSourceId, currentPath, searchQuery, loadContent]);
+
+  // Update status bar path when in filesystem search mode
+  useEffect(() => {
+    if (viewMode === 'filesystem' && searchQuery.trim()) {
+      const source = sources.find((s) => s.id === selectedSourceId);
+      const segments = source ? [source.name, `Search: "${searchQuery.trim()}"`] : [];
+      setStatusBarPath(segments);
+    }
+  }, [viewMode, searchQuery, selectedSourceId, sources]);
+
+  // Clear path when no source selected in filesystem mode
+  useEffect(() => {
+    if (viewMode === 'filesystem' && !searchQuery.trim() && selectedSourceId === null) {
+      setStatusBarPath([]);
+    }
+  }, [viewMode, searchQuery, selectedSourceId]);
 
   const saveApiKey = useCallback(
     async (apiKey: string, target: 'modal' | 'settings'): Promise<boolean> => {
@@ -738,12 +755,25 @@ function App() {
   const handleViewModeToggle = useCallback(() => {
     const newMode = viewMode === 'filesystem' ? 'virtual' : 'filesystem';
     setViewMode(newMode);
-    // Persist preference
     localStorage.setItem('fily-view-mode', newMode);
   }, [viewMode]);
 
+  const handleLayoutModeChange = useCallback((mode: 'library' | 'list') => {
+    setLayoutMode(mode);
+    localStorage.setItem('fily-layout-mode', mode);
+  }, []);
+
   const handleVirtualPathChange = useCallback((path: string) => {
     setCurrentVirtualPath(path);
+    setStatusBarPath(path === '/' ? [] : path.split('/').filter(Boolean));
+  }, []);
+
+  const handleLibraryPathChange = useCallback((segments: string[]) => {
+    setStatusBarPath(segments);
+  }, []);
+
+  const handleVirtualLibraryPathChange = useCallback((segments: string[]) => {
+    setStatusBarPath(segments);
   }, []);
 
   const handleLoadVirtualChildren = useCallback(async (virtualPath: string): Promise<VirtualNode[]> => {
@@ -762,13 +792,35 @@ function App() {
     }
   }, [selectedSourceId]);
 
-  // Load view mode preference on mount
+  // Close layout dropdown when clicking outside
+  useEffect(() => {
+    if (!isLayoutMenuOpen) return;
+    const handleClick = () => setIsLayoutMenuOpen(false);
+    const t = setTimeout(() => document.addEventListener('click', handleClick), 0);
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener('click', handleClick);
+    };
+  }, [isLayoutMenuOpen]);
+
+  // Load view and layout preferences on mount
   useEffect(() => {
     const savedViewMode = localStorage.getItem('fily-view-mode');
     if (savedViewMode === 'virtual' || savedViewMode === 'filesystem') {
       setViewMode(savedViewMode);
     }
+    const savedLayoutMode = localStorage.getItem('fily-layout-mode');
+    if (savedLayoutMode === 'library' || savedLayoutMode === 'list') {
+      setLayoutMode(savedLayoutMode);
+    }
   }, []);
+
+  // Update status bar path when switching to virtual view
+  useEffect(() => {
+    if (viewMode === 'virtual') {
+      setStatusBarPath(currentVirtualPath === '/' ? [] : currentVirtualPath.split('/').filter(Boolean));
+    }
+  }, [viewMode, currentVirtualPath]);
 
   return (
     <div className="app">
@@ -783,30 +835,84 @@ function App() {
       />
       <main className="main-panel">
         <header className="toolbar">
-          <SearchInput
-            value={searchQuery}
-            onChange={handleSearchChange}
-            disabled={selectedSourceId === null || isScanning || isExtracting}
-          />
-          <div className="toolbar-view-toggle">
-            <button
-              className={`view-toggle-button ${viewMode === 'filesystem' ? 'active' : ''}`}
-              onClick={handleViewModeToggle}
-              disabled={isScanning || isExtracting}
-              title="Filesystem View"
-            >
-              Filesystem
-            </button>
-            <button
-              className={`view-toggle-button ${viewMode === 'virtual' ? 'active' : ''}`}
-              onClick={handleViewModeToggle}
-              disabled={isScanning || isExtracting}
-              title="Virtual View"
-            >
-              Virtual
-            </button>
-          </div>
-          <div className="toolbar-actions">
+            <div className="toolbar-view-toggle">
+              <button
+                className={`view-toggle-button ${viewMode === 'filesystem' ? 'active' : ''}`}
+                onClick={handleViewModeToggle}
+                disabled={isScanning || isExtracting}
+                title="Filesystem View"
+              >
+                Filesystem
+              </button>
+              <button
+                className={`view-toggle-button ${viewMode === 'virtual' ? 'active' : ''}`}
+                onClick={handleViewModeToggle}
+                disabled={isScanning || isExtracting}
+                title="Virtual View"
+              >
+                Virtual
+              </button>
+            </div>
+            <div className="toolbar-layout-dropdown" onClick={(e) => e.stopPropagation()}>
+              <button
+                className="layout-dropdown-button"
+                onClick={() => setIsLayoutMenuOpen((o) => !o)}
+                title={layoutMode === 'library' ? 'Column view' : 'List view'}
+              >
+                {layoutMode === 'library' ? (
+                  <svg className="layout-icon" width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden>
+                    <rect x="1" y="2" width="2" height="10" rx="0.5" />
+                    <rect x="6" y="2" width="2" height="10" rx="0.5" />
+                    <rect x="11" y="2" width="2" height="10" rx="0.5" />
+                  </svg>
+                ) : (
+                  <svg className="layout-icon" width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden>
+                    <rect x="2" y="2" width="10" height="2" rx="0.5" />
+                    <rect x="2" y="6" width="10" height="2" rx="0.5" />
+                    <rect x="2" y="10" width="10" height="2" rx="0.5" />
+                  </svg>
+                )}
+                <span className="layout-dropdown-arrow">▾</span>
+              </button>
+              {isLayoutMenuOpen && (
+                <div className="layout-dropdown-menu">
+                  <button
+                    onClick={() => {
+                      handleLayoutModeChange('library');
+                      setIsLayoutMenuOpen(false);
+                    }}
+                    className={layoutMode === 'library' ? 'selected' : ''}
+                    title="Column view"
+                  >
+                    <svg className="layout-icon" width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden>
+                      <rect x="1" y="2" width="2" height="10" rx="0.5" />
+                      <rect x="6" y="2" width="2" height="10" rx="0.5" />
+                      <rect x="11" y="2" width="2" height="10" rx="0.5" />
+                    </svg>
+                  </button>
+                  <button
+                    onClick={() => {
+                      handleLayoutModeChange('list');
+                      setIsLayoutMenuOpen(false);
+                    }}
+                    className={layoutMode === 'list' ? 'selected' : ''}
+                    title="List view"
+                  >
+                    <svg className="layout-icon" width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden>
+                      <rect x="2" y="2" width="10" height="2" rx="0.5" />
+                      <rect x="2" y="6" width="10" height="2" rx="0.5" />
+                      <rect x="2" y="10" width="10" height="2" rx="0.5" />
+                    </svg>
+                  </button>
+                </div>
+              )}
+            </div>
+            <SearchInput
+              value={searchQuery}
+              onChange={handleSearchChange}
+              disabled={selectedSourceId === null || isScanning || isExtracting}
+            />
+            <div className="toolbar-actions">
             <button
               className="pipeline-button"
               onClick={handleFullOrganize}
@@ -815,8 +921,8 @@ function App() {
               }
             >
               {isScanning || isExtracting || isOrganizing
-                ? 'Running full AI organize…'
-                : 'Organize (Scan → Extract → AI)'}
+                ? 'Organizing…'
+                : 'Organize'}
             </button>
             <div className="toolbar-manual">
               <button
@@ -876,10 +982,9 @@ function App() {
               )}
             </div>
           </div>
-          <div className="toolbar-right">
-            <MemoryInfo />
-            <SettingsButton onClick={handleSettingsToggle} isActive={isSettingsOpen} />
-          </div>
+            <div className="toolbar-right">
+              <SettingsButton onClick={handleSettingsToggle} isActive={isSettingsOpen} />
+            </div>
         </header>
 
         {/* Error Banner */}
@@ -896,9 +1001,6 @@ function App() {
         {scanProgress && (
           <div className="progress-banner">
             <div className="progress-content">
-              <div className="progress-status">
-                <span className="progress-message">{scanProgress.message}</span>
-              </div>
               {scanProgress.filesFound > 0 && scanProgress.status === 'indexing' && (
                 <div className="progress-details">
                   <div className="progress-bar-container">
@@ -914,11 +1016,14 @@ function App() {
                   </span>
                 </div>
               )}
-              {scanProgress.currentFile && (
-                <div className="progress-current-file" title={scanProgress.currentFile}>
-                  {scanProgress.currentFile}
-                </div>
-              )}
+              <div className="progress-status">
+                <span className="progress-message">{scanProgress.message}</span>
+                {scanProgress.currentFile && (
+                  <span className="progress-current-file" title={scanProgress.currentFile}>
+                    {scanProgress.currentFile}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -927,9 +1032,6 @@ function App() {
         {extractionProgress && (
           <div className="progress-banner">
             <div className="progress-content">
-              <div className="progress-status">
-                <span className="progress-message">{extractionProgress.message}</span>
-              </div>
               {extractionProgress.filesTotal > 0 && (
                 <div className="progress-details">
                   <div className="progress-bar-container">
@@ -945,11 +1047,14 @@ function App() {
                   </span>
                 </div>
               )}
-              {extractionProgress.currentFile && (
-                <div className="progress-current-file" title={extractionProgress.currentFile}>
-                  {extractionProgress.currentFile}
-                </div>
-              )}
+              <div className="progress-status">
+                <span className="progress-message">{extractionProgress.message}</span>
+                {extractionProgress.currentFile && (
+                  <span className="progress-current-file" title={extractionProgress.currentFile}>
+                    {extractionProgress.currentFile}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -958,9 +1063,6 @@ function App() {
         {plannerProgress && (
           <div className="progress-banner">
             <div className="progress-content">
-              <div className="progress-status">
-                <span className="progress-message">{plannerProgress.message}</span>
-              </div>
               {/* For planning phase, we usually can't report granular progress – treat as indeterminate */}
               {plannerProgress.filesTotal > 0 && plannerProgress.status !== 'planning' && (
                 <div className="progress-details">
@@ -979,31 +1081,78 @@ function App() {
                   </span>
                 </div>
               )}
+              <div className="progress-status">
+                <span className="progress-message">{plannerProgress.message}</span>
+              </div>
             </div>
           </div>
         )}
 
         {viewMode === 'filesystem' ? (
-          <>
-            {files.length > 0 && (
-              <div style={{ padding: '12px 24px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                <strong>Tip:</strong> Right-click any file to view its extracted content. Click "Extract Content" to extract content from files.
-              </div>
-            )}
-            <FileBrowser
-              folders={folders}
-              files={files}
-              isLoading={isLoading}
-              currentPath={currentPath}
-              isSearching={!!searchQuery.trim()}
-              onFolderClick={handleFolderClick}
-              onFolderDoubleClick={handleFolderDoubleClick}
+          !!searchQuery.trim() ? (
+            <>
+              {files.length > 0 && (
+                <div style={{ padding: '12px 24px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                  <strong>Tip:</strong> Right-click any file to view its extracted content.
+                </div>
+              )}
+              <FileBrowser
+                folders={folders}
+                files={files}
+                isLoading={isLoading}
+                currentPath={currentPath}
+                isSearching={true}
+                onFolderClick={handleFolderClick}
+                onFolderDoubleClick={handleFolderDoubleClick}
+                onFileDoubleClick={handleFileDoubleClick}
+                onFileRightClick={handleFileRightClick}
+                onFileCardClick={handleFileCardClick}
+                onNavigateUp={handleNavigateUp}
+              />
+            </>
+          ) : selectedSourceId !== null && layoutMode === 'library' ? (
+            <LibraryView
+              sourceId={selectedSourceId}
+              sourceName={sources.find((s) => s.id === selectedSourceId)?.name ?? ''}
+              onPathChange={handleLibraryPathChange}
               onFileDoubleClick={handleFileDoubleClick}
               onFileRightClick={handleFileRightClick}
               onFileCardClick={handleFileCardClick}
-              onNavigateUp={handleNavigateUp}
             />
-          </>
+          ) : selectedSourceId !== null && layoutMode === 'list' ? (
+            <>
+              {files.length > 0 && (
+                <div style={{ padding: '12px 24px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                  <strong>Tip:</strong> Right-click any file to view its extracted content.
+                </div>
+              )}
+              <FileBrowser
+                folders={folders}
+                files={files}
+                isLoading={isLoading}
+                currentPath={currentPath}
+                isSearching={false}
+                onFolderClick={handleFolderClick}
+                onFolderDoubleClick={handleFolderDoubleClick}
+                onFileDoubleClick={handleFileDoubleClick}
+                onFileRightClick={handleFileRightClick}
+                onFileCardClick={handleFileCardClick}
+                onNavigateUp={handleNavigateUp}
+              />
+            </>
+          ) : (
+            <div className="file-list-empty">Select a source folder to browse.</div>
+          )
+        ) : layoutMode === 'library' ? (
+          <VirtualLibraryView
+            virtualTree={virtualTree}
+            isLoading={isLoading}
+            onPathChange={handleVirtualLibraryPathChange}
+            onFileClick={handleFileDoubleClick}
+            onFileRightClick={handleFileRightClick}
+            onFileCardClick={handleFileCardClick}
+            onLoadChildren={handleLoadVirtualChildren}
+          />
         ) : (
           <VirtualTreeView
             virtualTree={virtualTree}
@@ -1018,9 +1167,18 @@ function App() {
         )}
 
         <footer className="status-bar">
-          {folders.length > 0 && `${folders.length} folder${folders.length !== 1 ? 's' : ''}, `}
-          {files.length} file{files.length !== 1 ? 's' : ''}
-          {searchQuery && ` matching "${searchQuery}"`}
+          <div className="status-bar-path">
+            {statusBarPath.map((segment, i) => (
+              <span key={i} className="status-bar-path-segment">
+                {i > 0 && <span className="status-bar-path-arrow">›</span>}
+                {segment}
+              </span>
+            ))}
+            {statusBarPath.length === 0 && (
+              <span className="status-bar-path-segment">—</span>
+            )}
+          </div>
+          <MemoryInfo />
         </footer>
       </main>
       <Settings

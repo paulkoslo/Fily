@@ -10,6 +10,7 @@
     "apps/ui"
   ],
   "scripts": {
+    "sync-icons": "mkdir -p apps/ui/public/icons && cp apps/desktop/assets/icons/In-app-icons/* apps/ui/public/icons/",
     "dev": "npm run dev:ui & npm run dev:desktop",
     "dev:ui": "npm run dev -w apps/ui",
     "dev:desktop": "cd apps/desktop && npm run dev",

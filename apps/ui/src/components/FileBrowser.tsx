@@ -1,4 +1,6 @@
 import { useCallback } from 'react';
+import { FileIcon } from './FileIcon';
+import { FolderIcon } from './FolderIcon';
 
 interface FileBrowserProps {
   folders: FolderRecord[];
@@ -110,7 +112,7 @@ export function FileBrowser({
               title={`${folder.path}\n${folder.item_count} items`}
             >
               <div className="file-name">
-                <span className="file-icon folder-icon">📁</span>
+                <FolderIcon />
                 <div className="file-name-content">
                   <span className="file-name-text">{folder.name}</span>
                   {isSearching && folder.parent_path && (
@@ -134,7 +136,7 @@ export function FileBrowser({
               title={`${file.path}\nRight-click to view extracted content`}
             >
               <div className="file-name">
-                <span className="file-icon">📄</span>
+                <FileIcon extension={file.extension || ''} />
                 <div className="file-name-content">
                   <span className="file-name-text">{file.name}</span>
                   {isSearching && file.parent_path && (

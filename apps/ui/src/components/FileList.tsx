@@ -1,4 +1,5 @@
 import { memo, useCallback } from 'react';
+import { FileIcon } from './FileIcon';
 
 interface FileListProps {
   files: FileRecord[];
@@ -72,7 +73,7 @@ const FileItem = memo(function FileItem({ file, onDoubleClick, onRightClick }: F
       onContextMenu={handleContextMenu}
     >
       <div className="file-name">
-        <span className="file-icon">{getFileIcon(file.extension)}</span>
+        <FileIcon extension={file.extension} />
         <span className="file-name-text">{file.name}</span>
       </div>
       <span className="file-extension">{file.extension || '—'}</span>
@@ -81,46 +82,6 @@ const FileItem = memo(function FileItem({ file, onDoubleClick, onRightClick }: F
     </div>
   );
 });
-
-function getFileIcon(extension: string): string {
-  const ext = extension.toLowerCase();
-
-  // Documents
-  if (['pdf'].includes(ext)) return '📕';
-  if (['doc', 'docx', 'odt', 'rtf'].includes(ext)) return '📝';
-  if (['txt', 'md'].includes(ext)) return '📄';
-  if (['xls', 'xlsx', 'csv', 'numbers'].includes(ext)) return '📊';
-  if (['ppt', 'pptx', 'key'].includes(ext)) return '📽️';
-
-  // Images
-  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'ico', 'bmp', 'tiff', 'heic'].includes(ext)) return '🖼️';
-
-  // Videos
-  if (['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v'].includes(ext)) return '🎬';
-
-  // Audio
-  if (['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a'].includes(ext)) return '🎵';
-
-  // Archives
-  if (['zip', 'tar', 'gz', 'rar', '7z'].includes(ext)) return '📦';
-  if (['dmg', 'iso'].includes(ext)) return '💿';
-
-  // Code
-  if (['js', 'ts', 'jsx', 'tsx'].includes(ext)) return '📜';
-  if (['py'].includes(ext)) return '🐍';
-  if (['json', 'yaml', 'yml', 'xml'].includes(ext)) return '📋';
-  if (['html', 'css', 'scss'].includes(ext)) return '🌐';
-  if (['sh', 'bash', 'zsh'].includes(ext)) return '⚙️';
-
-  // Applications
-  if (['app', 'exe'].includes(ext)) return '📱';
-  if (['pkg'].includes(ext)) return '📥';
-
-  // Fonts
-  if (['ttf', 'otf', 'woff', 'woff2'].includes(ext)) return '🔤';
-
-  return '📄';
-}
 
 function formatFileSize(bytes: number): string {
   if (bytes === 0) return '0 B';
