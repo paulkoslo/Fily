@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Local-first macOS desktop app for AI-organized virtual file browsing",
-  "author": "Virtual Finder Team",
+  "author": "Fily Team",
   "license": "MIT",
   "workspaces": [
     "packages/*",

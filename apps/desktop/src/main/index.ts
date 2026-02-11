@@ -1,51 +1,37 @@
 // Electron app main process
-import * as dotenv from 'dotenv';
 import * as path from 'path';
 import * as os from 'os';
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, nativeImage } from 'electron';
 import { DatabaseManager, WatcherManager } from '@virtual-finder/core';
 import { registerIpcHandlers } from './ipc-handlers';
+import { ApiKeyStore } from './api-key-store';
 
-// Load .env file from project root
-// Try multiple possible locations (dev vs production)
-const envPaths = [
-  path.join(__dirname, '../../../../.env'), // Development: apps/desktop/dist/main -> project root
-  path.join(process.cwd(), '.env'), // Current working directory
-];
+// Initialize API key storage and load environment variables
+const apiKeyStore = new ApiKeyStore({
+  appName: 'Fily',
+  baseEnvPaths: [
+    path.join(__dirname, '../../../../.env'), // Development: apps/desktop/dist/main -> project root
+    path.join(process.cwd(), '.env'), // Current working directory
+  ],
+});
 
-// Try app path if available (may not work before app is ready)
+let packagedEnvPath: string | null = null;
 try {
-  envPaths.push(path.join(app.getAppPath(), '.env')); // App path (for packaged apps)
+  packagedEnvPath = path.join(app.getAppPath(), '.env'); // App path (for packaged apps)
 } catch (err) {
   // Ignore - app may not be ready yet
 }
 
-let envLoaded = false;
-for (const envPath of envPaths) {
-  const result = dotenv.config({ path: envPath });
-  if (!result.error) {
-    envLoaded = true;
-    console.log(`[Main] Loaded .env from: ${envPath}`);
-    break;
-  }
-}
-
-if (!envLoaded) {
-  console.warn('[Main] No .env file found. Using environment variables from system.');
-}
+apiKeyStore.loadEnv(packagedEnvPath);
 
 // Validate required environment variables
 if (!process.env.OPENAI_API_KEY) {
-  console.error('[Main] ERROR: OPENAI_API_KEY is not set!');
-  console.error('[Main] Please create a .env file in the project root with your OpenAI API key.');
-  console.error('[Main] Example: OPENAI_API_KEY=your-api-key-here');
-  // Don't exit - let the app start but AI features will fail gracefully
+  console.warn('[Main] OPENAI_API_KEY is not set. AI features will prompt for a key.');
 }
 
 // Set app name and userData path BEFORE any app.getPath() calls to ensure consistent paths
 app.setName('Fily');
-// Explicitly set userData path to ensure consistency across rebuilds
-const userDataPath = path.join(os.homedir(), 'Library', 'Application Support', 'Fily');
+const userDataPath = apiKeyStore.getUserDataPath();
 app.setPath('userData', userDataPath);
 
 // Keep a global reference to prevent garbage collection
@@ -82,15 +68,26 @@ function getRendererUrl(): string {
   return `file://${rendererPath}`;
 }
 
+/** Path to app icon (assets/icons/icon.icns). Used in dev for dock/window; in prod the .app bundle provides the icon. */
+function getIconPath(): string {
+  if (isDev()) {
+    return path.join(__dirname, '..', '..', 'assets', 'icons', 'icon.icns');
+  }
+  return path.join(process.resourcesPath, 'assets', 'icons', 'icon.icns');
+}
+
 async function createWindow(): Promise<void> {
+  const iconPath = getIconPath();
+  const icon = nativeImage.createFromPath(iconPath);
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     minWidth: 800,
     minHeight: 600,
-    title: 'Virtual Finder',
+    title: 'Fily',
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 15, y: 15 },
+    ...(icon && !icon.isEmpty() && { icon }),
     webPreferences: {
       preload: getPreloadPath(),
       nodeIntegration: false,
@@ -98,6 +95,9 @@ async function createWindow(): Promise<void> {
       sandbox: false,
     },
   });
+  if (icon && !icon.isEmpty()) {
+    mainWindow.setIcon(icon);
+  }
 
   // Load the renderer
   const url = getRendererUrl();
@@ -144,7 +144,7 @@ async function initializeApp(): Promise<void> {
   }
 
   // Register IPC handlers
-  registerIpcHandlers(ipcMain, db, () => mainWindow, watcherManager);
+  registerIpcHandlers(ipcMain, db, () => mainWindow, watcherManager, apiKeyStore);
 
   // Create the main window
   await createWindow();

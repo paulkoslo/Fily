@@ -173,7 +173,7 @@ async function benchmarkTreeBuilding(fileCounts: number[]): Promise<void> {
 
 // Main benchmark runner
 async function runBenchmarks(): Promise<void> {
-  console.log('🚀 Virtual Finder Performance Benchmarks\n');
+  console.log('🚀 Fily Performance Benchmarks\n');
   console.log('=' .repeat(60));
   
   // Test with different file counts

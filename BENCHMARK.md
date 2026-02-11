@@ -1,6 +1,6 @@
 # Performance Benchmark Guide
 
-This guide explains how to test and verify the performance improvements made to Virtual Finder.
+This guide explains how to test and verify the performance improvements made to Fily.
 
 ## Quick Test: Real-World Performance
 
@@ -183,7 +183,7 @@ The app logs performance metrics to the console:
 ## Benchmark Output Example
 
 ```
-🚀 Virtual Finder Performance Benchmarks
+🚀 Fily Performance Benchmarks
 ============================================================
 
 📊 Benchmark 1: Database Insert Performance

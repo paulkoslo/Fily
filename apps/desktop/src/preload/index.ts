@@ -37,6 +37,10 @@ import {
   GetVirtualTreeResponseSchema,
   GetVirtualChildrenRequestSchema,
   GetVirtualChildrenResponseSchema,
+  GetApiKeyStatusResponseSchema,
+  SaveApiKeyRequestSchema,
+  SaveApiKeyResponseSchema,
+  DeleteApiKeyResponseSchema,
   type ScanSourceRequest,
   type ScanSourceResponse,
   type ScanProgress,
@@ -72,6 +76,10 @@ import {
   type GetVirtualTreeResponse,
   type GetVirtualChildrenRequest,
   type GetVirtualChildrenResponse,
+  type GetApiKeyStatusResponse,
+  type SaveApiKeyRequest,
+  type SaveApiKeyResponse,
+  type DeleteApiKeyResponse,
 } from '@virtual-finder/core';
 
 type RunPlannerRequest = {
@@ -452,6 +460,27 @@ const api = {
     return () => {
       ipcRenderer.removeListener((IPC_CHANNELS as any).PLANNER_PROGRESS, handler);
     };
+  },
+
+  /**
+   * Retrieve stored OpenAI API key status.
+   */
+  getApiKeyStatus: (): Promise<GetApiKeyStatusResponse> => {
+    return invoke(IPC_CHANNELS.GET_API_KEY_STATUS, null, GetApiKeyStatusResponseSchema);
+  },
+
+  /**
+   * Save or update the OpenAI API key.
+   */
+  saveApiKey: (request: SaveApiKeyRequest): Promise<SaveApiKeyResponse> => {
+    return invoke(IPC_CHANNELS.SAVE_API_KEY, SaveApiKeyRequestSchema, SaveApiKeyResponseSchema, request);
+  },
+
+  /**
+   * Delete the stored OpenAI API key.
+   */
+  deleteApiKey: (): Promise<DeleteApiKeyResponse> => {
+    return invoke(IPC_CHANNELS.DELETE_API_KEY, null, DeleteApiKeyResponseSchema);
   },
 };
 

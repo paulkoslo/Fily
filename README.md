@@ -1,10 +1,10 @@
 # fily, AI powered file management v1.0
 
-A local-first macOS desktop application that creates an intelligent, AI-organized virtual file browser. Virtual Finder indexes your files and presents them in a smart virtual folder structure without moving, renaming, or deleting your original files.
+A local-first macOS desktop application that creates an intelligent, AI-organized virtual file browser. Fily indexes your files and presents them in a smart virtual folder structure without moving, renaming, or deleting your original files.
 
 ## Overview
 
-Virtual Finder solves the problem of disorganized files scattered across your system. Instead of manually organizing thousands of files, Virtual Finder uses AI to understand your content and automatically creates a virtual organization system. Your files stay exactly where they are—Virtual Finder simply provides a smarter way to find and browse them.
+Fily solves the problem of disorganized files scattered across your system. Instead of manually organizing thousands of files, Fily uses AI to understand your content and automatically creates a virtual organization system. Your files stay exactly where they are—Fily simply provides a smarter way to find and browse them.
 
 ### Key Features
 
@@ -93,7 +93,7 @@ OPENAI_API_KEY=your-api-key-here
 
 ## How It Works
 
-Virtual Finder operates in four main stages:
+Fily operates in four main stages:
 
 1. **Index**: Crawls your source directories, extracts file metadata, and stores everything in a local SQLite database
 2. **Extract**: Analyzes file content using specialized extractors for PDFs, documents, images, audio, and more
@@ -102,7 +102,7 @@ Virtual Finder operates in four main stages:
 
 ### Architecture
 
-Virtual Finder is built with a modular architecture:
+Fily is built with a modular architecture:
 
 - **Electron Main Process**: Handles file system operations, database management, and IPC communication
 - **React Renderer**: Modern UI built with React and TypeScript
@@ -159,7 +159,7 @@ Fily/
 
 ### Content Extraction
 
-Virtual Finder can extract and analyze content from:
+Fily can extract and analyze content from:
 
 - **PDFs**: Text extraction, metadata (title, author, pages), image-based PDF support
 - **Documents**: DOCX, XLSX, PPTX with full text and metadata extraction
@@ -297,4 +297,4 @@ MIT
 
 ## Acknowledgments
 
-Virtual Finder is inspired by the need for intelligent file organization without the complexity of manual folder management. Built with Electron, React, and modern AI capabilities.
+Fily is inspired by the need for intelligent file organization without the complexity of manual folder management. Built with Electron, React, and modern AI capabilities.

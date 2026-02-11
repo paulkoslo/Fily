@@ -22,6 +22,10 @@ import {
   GetFileContentRequestSchema,
   GetVirtualTreeRequestSchema,
   GetVirtualChildrenRequestSchema,
+  GetApiKeyStatusResponseSchema,
+  SaveApiKeyRequestSchema,
+  SaveApiKeyResponseSchema,
+  DeleteApiKeyResponseSchema,
   type ScanSourceResponse,
   type ListFilesResponse,
   type ListFoldersResponse,
@@ -43,17 +47,22 @@ import {
   type GetFileContentResponse,
   type GetVirtualTreeResponse,
   type GetVirtualChildrenResponse,
+  type GetApiKeyStatusResponse,
+  type SaveApiKeyResponse,
+  type DeleteApiKeyResponse,
   type FileRecord,
   type PlannerOutput,
   TaxonomyPlanner,
 } from '@virtual-finder/core';
+import { ApiKeyStore } from './api-key-store';
 import { openFile } from './file-opener';
 
 export function registerIpcHandlers(
   ipcMain: IpcMain,
   db: DatabaseManager,
   getMainWindow: () => BrowserWindow | null,
-  watcherManager: WatcherManager
+  watcherManager: WatcherManager,
+  apiKeyStore: ApiKeyStore
 ): void {
   // Set up IPC event emission for file changes
   watcherManager.setOnFileChangedCallback((event) => {
@@ -155,6 +164,60 @@ export function registerIpcHandlers(
     }
   );
 
+  // API key status
+  ipcMain.handle(IPC_CHANNELS.GET_API_KEY_STATUS, async (): Promise<GetApiKeyStatusResponse> => {
+    const status = apiKeyStore.getStatus();
+    return GetApiKeyStatusResponseSchema.parse({
+      success: true,
+      ...status,
+    });
+  });
+
+  // Save API key
+  ipcMain.handle(
+    IPC_CHANNELS.SAVE_API_KEY,
+    async (_event, request: unknown): Promise<SaveApiKeyResponse> => {
+      const parsed = SaveApiKeyRequestSchema.safeParse(request);
+      if (!parsed.success) {
+        return {
+          success: false,
+          error: `Invalid request: ${parsed.error.message}`,
+        };
+      }
+
+      try {
+        const status = apiKeyStore.saveKey(parsed.data.apiKey);
+        return SaveApiKeyResponseSchema.parse({
+          success: true,
+          status,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return {
+          success: false,
+          error: message,
+        };
+      }
+    }
+  );
+
+  // Delete API key
+  ipcMain.handle(IPC_CHANNELS.DELETE_API_KEY, async (): Promise<DeleteApiKeyResponse> => {
+    try {
+      const status = apiKeyStore.deleteKey();
+      return DeleteApiKeyResponseSchema.parse({
+        success: true,
+        status,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return {
+        success: false,
+        error: message,
+      };
+    }
+  });
+
   // Preview source deletion (shows what will be deleted)
   ipcMain.handle(
     IPC_CHANNELS.PREVIEW_SOURCE_DELETION,
@@ -215,14 +278,14 @@ export function registerIpcHandlers(
           type: 'warning',
           title: 'Confirm Source Deletion',
           message: `Delete source "${preview.sourceName}"?`,
-          detail: `This will permanently delete from Virtual Finder:\n\n` +
+          detail: `This will permanently delete from Fily:\n\n` +
                   `• ${preview.fileCount.toLocaleString()} files\n` +
                   `• ${preview.folderCount.toLocaleString()} folders\n` +
                   `• ${preview.virtualPlacementCount.toLocaleString()} virtual placements\n` +
                   (preview.fileContentCount && preview.fileContentCount > 0 ? `• ${preview.fileContentCount.toLocaleString()} file content records\n` : '') +
                   (preview.eventCount && preview.eventCount > 0 ? `• ${preview.eventCount.toLocaleString()} watch events\n` : '') +
                   (preview.childSourceCount && preview.childSourceCount > 0 ? `• ${preview.childSourceCount.toLocaleString()} child sources\n` : '') +
-                  `\n⚠️ This only deletes data from Virtual Finder.\n` +
+                  `\n⚠️ This only deletes data from Fily.\n` +
                   `Your actual files at "${preview.sourcePath}" will NOT be deleted.`,
           buttons: ['Cancel', 'Delete'],
           defaultId: 0,

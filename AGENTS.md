@@ -1,11 +1,11 @@
-# AGENTS.md - Virtual Finder Architecture Vision
+# AGENTS.md - Fily Architecture Vision
 
 > **This document describes the VISION and ARCHITECTURE for AI integration.**  
 > For the current implementation status, see [README.md](./README.md).
 
 ## Overview
 
-Virtual Finder is a local-first macOS desktop app that creates a **virtual, AI-organized file browser**. It indexes files without moving/renaming/deleting them, presenting an intelligent virtual folder structure while preserving original file locations.
+Fily is a local-first macOS desktop app that creates a **virtual, AI-organized file browser**. It indexes files without moving/renaming/deleting them, presenting an intelligent virtual folder structure while preserving original file locations.
 
 **Current Implementation**: Uses OpenAI-based AI agents (SummaryAgent, TagAgent, TaxonomyAgent) to extract content, generate summaries/tags, and design intelligent virtual folder hierarchies.
 
@@ -15,7 +15,7 @@ Virtual Finder is a local-first macOS desktop app that creates a **virtual, AI-o
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        Virtual Finder Pipeline                       │
+│                        Fily Pipeline                       │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                      │
 │   ┌─────────┐    ┌──────────┐    ┌─────────┐    ┌──────────────┐   │

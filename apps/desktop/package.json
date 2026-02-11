@@ -24,16 +24,18 @@
   },
   "build": {
     "appId": "com.virtualfinder.app",
-    "productName": "Virtual Finder",
+    "productName": "Fily",
     "mac": {
       "category": "public.app-category.productivity",
-      "target": "dir"
+      "target": "dir",
+      "icon": "assets/icons/icon.icns"
     },
     "directories": {
       "output": "out"
     },
     "files": [
       "dist/**/*",
+      "assets/icons/**/*",
       "!node_modules/@virtual-finder/core/src",
       "!**/*.ts",
       "!**/*.map"

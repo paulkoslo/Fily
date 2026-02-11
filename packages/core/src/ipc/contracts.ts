@@ -451,6 +451,42 @@ export const GetVirtualChildrenResponseSchema = z.object({
 export type GetVirtualChildrenRequest = z.infer<typeof GetVirtualChildrenRequestSchema>;
 export type GetVirtualChildrenResponse = z.infer<typeof GetVirtualChildrenResponseSchema>;
 
+// API key management
+export const ApiKeyStatusSchema = z.object({
+  hasKey: z.boolean(),
+  maskedKey: z.string().optional(),
+});
+
+export type ApiKeyStatus = z.infer<typeof ApiKeyStatusSchema>;
+
+export const GetApiKeyStatusResponseSchema = z.object({
+  success: z.boolean(),
+  error: z.string().optional(),
+}).and(ApiKeyStatusSchema);
+
+export type GetApiKeyStatusResponse = z.infer<typeof GetApiKeyStatusResponseSchema>;
+
+export const SaveApiKeyRequestSchema = z.object({
+  apiKey: z.string().min(10, 'API key must be at least 10 characters'),
+});
+
+export const SaveApiKeyResponseSchema = z.object({
+  success: z.boolean(),
+  status: ApiKeyStatusSchema.optional(),
+  error: z.string().optional(),
+});
+
+export type SaveApiKeyRequest = z.infer<typeof SaveApiKeyRequestSchema>;
+export type SaveApiKeyResponse = z.infer<typeof SaveApiKeyResponseSchema>;
+
+export const DeleteApiKeyResponseSchema = z.object({
+  success: z.boolean(),
+  status: ApiKeyStatusSchema.optional(),
+  error: z.string().optional(),
+});
+
+export type DeleteApiKeyResponse = z.infer<typeof DeleteApiKeyResponseSchema>;
+
 export const IPC_CHANNELS = {
   SCAN_SOURCE: 'scan-source',
   SCAN_PROGRESS: 'scan-progress',
@@ -476,6 +512,9 @@ export const IPC_CHANNELS = {
   GET_VIRTUAL_CHILDREN: 'get-virtual-children',
   RUN_PLANNER: 'run-planner',
   PLANNER_PROGRESS: 'planner-progress',
+  GET_API_KEY_STATUS: 'get-api-key-status',
+  SAVE_API_KEY: 'save-api-key',
+  DELETE_API_KEY: 'delete-api-key',
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

@@ -7,6 +7,7 @@ import { Settings } from './components/Settings';
 import { SettingsButton } from './components/SettingsButton';
 import { MemoryInfo } from './components/MemoryInfo';
 import { ContentViewer } from './components/ContentViewer';
+import { ApiKeyModal } from './components/ApiKeyModal';
 import { getTheme, getThemeClassName, defaultThemeId, getAllThemeIds } from './themes';
 
 function App() {
@@ -35,6 +36,12 @@ function App() {
   const [isOrganizing, setIsOrganizing] = useState(false);
   const [plannerProgress, setPlannerProgress] = useState<PlannerProgress | null>(null);
   const [isManualMenuOpen, setIsManualMenuOpen] = useState(false);
+  const [apiKeyStatus, setApiKeyStatus] = useState<ApiKeyStatus | null>(null);
+  const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
+  const [apiKeyModalError, setApiKeyModalError] = useState<string | null>(null);
+  const [apiKeySettingsError, setApiKeySettingsError] = useState<string | null>(null);
+  const [isSavingApiKey, setIsSavingApiKey] = useState(false);
+  const [isApiKeyMutating, setIsApiKeyMutating] = useState(false);
 
   const loadSources = async () => {
     try {
@@ -281,12 +288,108 @@ function App() {
     loadSources();
   }, []);
 
+  // Fetch API key status on mount
+  useEffect(() => {
+    const fetchApiKeyStatus = async () => {
+      try {
+        const status = await window.api.getApiKeyStatus();
+        if (status.success) {
+          setApiKeyStatus({ hasKey: status.hasKey, maskedKey: status.maskedKey });
+          setIsApiKeyModalOpen(!status.hasKey);
+        } else {
+          setApiKeyStatus({ hasKey: false });
+          setIsApiKeyModalOpen(true);
+        }
+      } catch (err) {
+        console.error('Failed to load API key status:', err);
+        setApiKeyStatus({ hasKey: false });
+        setIsApiKeyModalOpen(true);
+      }
+    };
+    fetchApiKeyStatus();
+  }, []);
+
   // Load files and folders when source, path, or search query changes
   useEffect(() => {
     if (selectedSourceId !== null) {
       loadContent(selectedSourceId, currentPath, searchQuery);
     }
   }, [selectedSourceId, currentPath, searchQuery, loadContent]);
+
+  const saveApiKey = useCallback(
+    async (apiKey: string, target: 'modal' | 'settings'): Promise<boolean> => {
+      try {
+        const response = await window.api.saveApiKey({ apiKey });
+        if (response.success && response.status) {
+          setApiKeyStatus(response.status);
+          setIsApiKeyModalOpen(false);
+          setApiKeyModalError(null);
+          setApiKeySettingsError(null);
+          return true;
+        }
+        const message = response.error || 'Failed to save API key';
+        if (target === 'modal') {
+          setApiKeyModalError(message);
+        } else {
+          setApiKeySettingsError(message);
+        }
+        return false;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to save API key';
+        if (target === 'modal') {
+          setApiKeyModalError(message);
+        } else {
+          setApiKeySettingsError(message);
+        }
+        return false;
+      }
+    },
+    []
+  );
+
+  const handleModalSaveApiKey = useCallback(
+    async (apiKey: string) => {
+      setIsSavingApiKey(true);
+      setApiKeyModalError(null);
+      await saveApiKey(apiKey, 'modal');
+      setIsSavingApiKey(false);
+    },
+    [saveApiKey]
+  );
+
+  const handleSettingsSaveApiKey = useCallback(
+    async (apiKey: string) => {
+      setIsApiKeyMutating(true);
+      setApiKeySettingsError(null);
+      const success = await saveApiKey(apiKey, 'settings');
+      setIsApiKeyMutating(false);
+      return success;
+    },
+    [saveApiKey]
+  );
+
+  const handleDeleteApiKey = useCallback(async () => {
+    setIsApiKeyMutating(true);
+    setApiKeySettingsError(null);
+    try {
+      const response = await window.api.deleteApiKey();
+      if (response.success && response.status) {
+        setApiKeyStatus(response.status);
+        setIsApiKeyModalOpen(true);
+        setApiKeyModalError(null);
+        setIsApiKeyMutating(false);
+        return true;
+      }
+      const message = response.error || 'Failed to delete API key';
+      setApiKeySettingsError(message);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to delete API key';
+      setApiKeySettingsError(message);
+    } finally {
+      setIsApiKeyMutating(false);
+    }
+    return false;
+  }, []);
 
   const handleScan = async () => {
     if (selectedSourceId === null) return;
@@ -925,6 +1028,17 @@ function App() {
         currentThemeId={currentThemeId}
         onClose={handleSettingsClose}
         onThemeChange={handleThemeChange}
+        apiKeyStatus={apiKeyStatus}
+        apiKeyError={apiKeySettingsError}
+        isApiKeyBusy={isApiKeyMutating}
+        onSaveApiKey={handleSettingsSaveApiKey}
+        onDeleteApiKey={handleDeleteApiKey}
+      />
+      <ApiKeyModal
+        isOpen={isApiKeyModalOpen}
+        isSaving={isSavingApiKey}
+        error={apiKeyModalError}
+        onSubmit={handleModalSaveApiKey}
       />
       {contentViewerFile && (
         <ContentViewer

@@ -235,6 +235,32 @@ declare global {
     error?: string;
   }
 
+  interface ApiKeyStatus {
+    hasKey: boolean;
+    maskedKey?: string;
+  }
+
+  interface GetApiKeyStatusResponse extends ApiKeyStatus {
+    success: boolean;
+    error?: string;
+  }
+
+  interface SaveApiKeyRequest {
+    apiKey: string;
+  }
+
+  interface SaveApiKeyResponse {
+    success: boolean;
+    status?: ApiKeyStatus;
+    error?: string;
+  }
+
+  interface DeleteApiKeyResponse {
+    success: boolean;
+    status?: ApiKeyStatus;
+    error?: string;
+  }
+
   interface VirtualNode {
     id: string;
     name: string;
@@ -322,6 +348,9 @@ declare global {
     getVirtualChildren: (request: GetVirtualChildrenRequest) => Promise<GetVirtualChildrenResponse>;
     runPlanner: (request: RunPlannerRequest) => Promise<RunPlannerResponse>;
     onPlannerProgress: (callback: (progress: PlannerProgress) => void) => () => void;
+    getApiKeyStatus: () => Promise<GetApiKeyStatusResponse>;
+    saveApiKey: (request: SaveApiKeyRequest) => Promise<SaveApiKeyResponse>;
+    deleteApiKey: () => Promise<DeleteApiKeyResponse>;
   }
 
   interface Window {
