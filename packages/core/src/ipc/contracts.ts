@@ -104,6 +104,8 @@ export const ScanProgressSchema = z.object({
   foldersFound: z.number().optional(),
   filesProcessed: z.number(),
   message: z.string(),
+  step: z.string().optional(), // e.g., "Step 1/3: Scanning files..."
+  phase: z.string().optional(), // e.g., "scanning", "indexing", "cleaning"
 });
 
 export const ScanSourceResponseSchema = z.object({
@@ -326,6 +328,8 @@ export const ExtractionProgressSchema = z.object({
   filesTotal: z.number(),
   currentFile: z.string(),
   message: z.string(),
+  step: z.string().optional(), // e.g., "Step 2/3: Extracting content..."
+  phase: z.string().optional(), // e.g., "extracting", "summarizing", "tagging", "storing"
 });
 
 export const ExtractContentResponseSchema = z.object({
@@ -349,6 +353,9 @@ export const PlannerProgressSchema = z.object({
   filesTotal: z.number(),
   filesPlanned: z.number(),
   message: z.string(),
+  step: z.string().optional(), // e.g., "Step 3/3: Organizing files..."
+  phase: z.string().optional(), // e.g., "loading", "planning", "applying", "storing"
+  progressPercent: z.number().optional(), // 0-100 for planning phase
 });
 
 export const RunPlannerResponseSchema = z.object({
@@ -452,22 +459,36 @@ export type GetVirtualChildrenRequest = z.infer<typeof GetVirtualChildrenRequest
 export type GetVirtualChildrenResponse = z.infer<typeof GetVirtualChildrenResponseSchema>;
 
 // API key management
+export const ApiKeyTypeSchema = z.enum(['openrouter', 'openai']);
+export type ApiKeyType = z.infer<typeof ApiKeyTypeSchema>;
+
 export const ApiKeyStatusSchema = z.object({
   hasKey: z.boolean(),
   maskedKey: z.string().optional(),
+  provider: ApiKeyTypeSchema.optional(),
 });
 
 export type ApiKeyStatus = z.infer<typeof ApiKeyStatusSchema>;
 
+export const MultiApiKeyStatusSchema = z.object({
+  openrouter: ApiKeyStatusSchema,
+  openai: ApiKeyStatusSchema,
+  activeProvider: ApiKeyTypeSchema.nullable(),
+});
+
+export type MultiApiKeyStatus = z.infer<typeof MultiApiKeyStatusSchema>;
+
 export const GetApiKeyStatusResponseSchema = z.object({
   success: z.boolean(),
   error: z.string().optional(),
+  multiStatus: MultiApiKeyStatusSchema.optional(),
 }).and(ApiKeyStatusSchema);
 
 export type GetApiKeyStatusResponse = z.infer<typeof GetApiKeyStatusResponseSchema>;
 
 export const SaveApiKeyRequestSchema = z.object({
   apiKey: z.string().min(10, 'API key must be at least 10 characters'),
+  keyType: ApiKeyTypeSchema.optional().default('openai'),
 });
 
 export const SaveApiKeyResponseSchema = z.object({
@@ -479,13 +500,52 @@ export const SaveApiKeyResponseSchema = z.object({
 export type SaveApiKeyRequest = z.infer<typeof SaveApiKeyRequestSchema>;
 export type SaveApiKeyResponse = z.infer<typeof SaveApiKeyResponseSchema>;
 
+export const DeleteApiKeyRequestSchema = z.object({
+  keyType: ApiKeyTypeSchema.optional(),
+});
+
+export type DeleteApiKeyRequest = z.infer<typeof DeleteApiKeyRequestSchema>;
+
 export const DeleteApiKeyResponseSchema = z.object({
   success: z.boolean(),
   status: ApiKeyStatusSchema.optional(),
+  multiStatus: MultiApiKeyStatusSchema.optional(),
   error: z.string().optional(),
 });
 
 export type DeleteApiKeyResponse = z.infer<typeof DeleteApiKeyResponseSchema>;
+
+// LLM Model settings
+export const LLMModelSchema = z.enum([
+  'openai/gpt-5-nano',
+  'openai/gpt-5-mini',
+  'x-ai/grok-4.1-fast',
+  'deepseek/deepseek-v3.2',
+]);
+
+export type LLMModel = z.infer<typeof LLMModelSchema>;
+
+export const GetLLMModelResponseSchema = z.object({
+  success: z.boolean(),
+  model: LLMModelSchema.nullable(),
+  error: z.string().optional(),
+});
+
+export type GetLLMModelResponse = z.infer<typeof GetLLMModelResponseSchema>;
+
+export const SaveLLMModelRequestSchema = z.object({
+  model: LLMModelSchema,
+});
+
+export type SaveLLMModelRequest = z.infer<typeof SaveLLMModelRequestSchema>;
+
+export const SaveLLMModelResponseSchema = z.object({
+  success: z.boolean(),
+  model: LLMModelSchema.optional(),
+  error: z.string().optional(),
+});
+
+export type SaveLLMModelResponse = z.infer<typeof SaveLLMModelResponseSchema>;
 
 export const IPC_CHANNELS = {
   SCAN_SOURCE: 'scan-source',
@@ -515,6 +575,8 @@ export const IPC_CHANNELS = {
   GET_API_KEY_STATUS: 'get-api-key-status',
   SAVE_API_KEY: 'save-api-key',
   DELETE_API_KEY: 'delete-api-key',
+  GET_LLM_MODEL: 'get-llm-model',
+  SAVE_LLM_MODEL: 'save-llm-model',
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

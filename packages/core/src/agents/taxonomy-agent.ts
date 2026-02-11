@@ -1,4 +1,3 @@
-import OpenAI from 'openai';
 import type { TaxonomyOverview } from '../planner/taxonomy-overview';
 import type { TaxonomyPlan } from '../planner/taxonomy-types';
 import {
@@ -6,6 +5,8 @@ import {
   TAXONOMY_AGENT_USER_PROMPT,
 } from './prompts/taxonomy-agent-prompt';
 import type { WorkerPool } from './worker-pool';
+import { executeApiCall } from './api-call-helper';
+import { createLLMClient, getProviderDisplayName, type LLMClient } from './llm-client';
 
 function buildTrivialPlan(): TaxonomyPlan {
   return {
@@ -33,26 +34,25 @@ function buildTrivialPlan(): TaxonomyPlan {
 }
 
 export class TaxonomyAgent {
-  private openai: OpenAI | null;
+  private llmClient: LLMClient | null;
   private workerPool: WorkerPool | null;
 
   constructor(workerPool?: WorkerPool) {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
+    this.llmClient = createLLMClient();
+    if (!this.llmClient) {
       // Make it very obvious in logs when we are NOT using the LLM
       console.warn(
-        '[TaxonomyAgent] OPENAI_API_KEY is not set – using trivial /All Files taxonomy plan. ' +
-          'Set OPENAI_API_KEY in the Electron main process environment to enable AI taxonomy.'
+        '[TaxonomyAgent] No LLM API key configured – using trivial /All Files taxonomy plan. ' +
+          'Set OPENROUTER_API_KEY or OPENAI_API_KEY in the Electron main process environment to enable AI taxonomy.'
       );
-      this.openai = null;
     } else {
-      this.openai = new OpenAI({ apiKey });
+      console.log(`[TaxonomyAgent] Using ${getProviderDisplayName(this.llmClient.getProvider())} with model: ${this.llmClient.getModel()}`);
     }
     this.workerPool = workerPool || null;
   }
 
   async generatePlan(overview: TaxonomyOverview): Promise<TaxonomyPlan> {
-    if (!this.openai) {
+    if (!this.llmClient) {
       // No API key available – fall back to a simple, deterministic taxonomy
       return buildTrivialPlan();
     }
@@ -60,48 +60,54 @@ export class TaxonomyAgent {
     const system = TAXONOMY_AGENT_SYSTEM_PROMPT;
     const user = TAXONOMY_AGENT_USER_PROMPT(overview);
 
-    const apiCall = async (): Promise<TaxonomyPlan> => {
-      try {
-        const response = await this.openai!.chat.completions.create({
-          model: 'gpt-5-nano',
-          messages: [
-            { role: 'system', content: system },
-            { role: 'user', content: user },
-          ],
-        });
-
-        const raw = response.choices[0]?.message?.content?.trim() || '';
-
-        if (!raw) {
-          console.warn(
-            '[TaxonomyAgent] Model returned empty content – falling back to trivial /All Files plan.'
-          );
-          return buildTrivialPlan();
-        }
-
-        const parsed = this.parsePlan(raw);
-        if (!parsed) {
-          console.warn(
-            '[TaxonomyAgent] Failed to parse model response into TaxonomyPlan – falling back to trivial /All Files plan.\n' +
-              `First 300 chars of response:\n${raw.slice(0, 300)}`
-          );
-          return buildTrivialPlan();
-        }
-
-        console.log(
-          `[TaxonomyAgent] Successfully generated taxonomy with ${parsed.folders.length} folders and ${parsed.rules.length} rules.`
-        );
-        return parsed;
-      } catch (error) {
-        console.error(
-          '[TaxonomyAgent] Error while calling OpenAI for taxonomy plan – falling back to trivial /All Files plan:',
-          error
-        );
-        return buildTrivialPlan();
-      }
+    let usedFallback = false;
+    const fallback = () => {
+      usedFallback = true;
+      return buildTrivialPlan();
     };
+    const messages = [
+      { role: 'system' as const, content: system },
+      { role: 'user' as const, content: user },
+    ];
 
-    return this.workerPool ? await this.workerPool.execute(apiCall) : await apiCall();
+    const result = await executeApiCall<string | TaxonomyPlan>(
+      messages,
+      fallback,
+      this.workerPool,
+      this.llmClient
+    );
+
+    if (typeof result !== 'string') {
+      if (usedFallback) {
+        console.error(
+          '[TaxonomyAgent] Error while calling LLM for taxonomy plan – falling back to trivial /All Files plan.'
+        );
+      }
+      return result;
+    }
+
+    const raw = result.trim();
+
+    if (!raw) {
+      console.warn(
+        '[TaxonomyAgent] Model returned empty content – falling back to trivial /All Files plan.'
+      );
+      return buildTrivialPlan();
+    }
+
+    const parsed = this.parsePlan(raw);
+    if (!parsed) {
+      console.warn(
+        '[TaxonomyAgent] Failed to parse model response into TaxonomyPlan – falling back to trivial /All Files plan.\n' +
+          `First 300 chars of response:\n${raw.slice(0, 300)}`
+      );
+      return buildTrivialPlan();
+    }
+
+    console.log(
+      `[TaxonomyAgent] Successfully generated taxonomy with ${parsed.folders.length} folders and ${parsed.rules.length} rules.`
+    );
+    return parsed;
   }
 
   /**

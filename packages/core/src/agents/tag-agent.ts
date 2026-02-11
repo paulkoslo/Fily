@@ -1,9 +1,10 @@
-import OpenAI from 'openai';
 import {
   TAG_AGENT_SYSTEM_PROMPT,
   TAG_AGENT_USER_PROMPT,
 } from './prompts/tag-agent-prompt';
 import type { WorkerPool } from './worker-pool';
+import { executeApiCall } from './api-call-helper';
+import { createLLMClient, getProviderDisplayName, type LLMClient } from './llm-client';
 
 /**
  * Tag Agent
@@ -15,15 +16,17 @@ import type { WorkerPool } from './worker-pool';
  * 
  * Does NOT use the full file content - only summary and metadata.
  * Each API call counts as 1 worker in the worker pool.
+ * 
+ * Supports both OpenRouter and OpenAI through the unified LLMClient.
  */
 export class TagAgent {
-  private openai: OpenAI | null = null;
+  private llmClient: LLMClient | null = null;
   private workerPool: WorkerPool | null = null;
 
   constructor(workerPool?: WorkerPool) {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (apiKey) {
-      this.openai = new OpenAI({ apiKey });
+    this.llmClient = createLLMClient();
+    if (this.llmClient) {
+      console.log(`[TagAgent] Using ${getProviderDisplayName(this.llmClient.getProvider())} with model: ${this.llmClient.getModel()}`);
     }
     this.workerPool = workerPool || null;
   }
@@ -38,73 +41,63 @@ export class TagAgent {
     summary: string,
     metadata?: Record<string, any>
   ): Promise<string[]> {
-    if (!this.openai || !summary || summary.trim().length === 0) {
+    const trimmedSummary = summary?.trim() ?? '';
+    if (trimmedSummary.length === 0) {
       // No model available or no summary → pure heuristic tags
       return this.generateFallbackTags(filePath, fileName, extension, metadata);
     }
 
-    try {
-      const apiCall = async () => {
-        const response = await this.openai!.chat.completions.create({
-          model: 'gpt-5-nano',
-          messages: [
-            {
-              role: 'system',
-              content: TAG_AGENT_SYSTEM_PROMPT,
-            },
-            {
-              role: 'user',
-              content: TAG_AGENT_USER_PROMPT(filePath, fileName, extension, summary, metadata),
-            },
-          ],
-          max_completion_tokens: 5000, // Increased to ensure enough tokens for output even with reasoning
-        });
+    const fallback = () => this.generateFallbackTags(filePath, fileName, extension, metadata);
 
-        const content = response.choices[0]?.message?.content?.trim();
-        if (!content) {
-          return this.generateFallbackTags(filePath, fileName, extension, metadata);
-        }
+    const messages = [
+      {
+        role: 'system' as const,
+        content: TAG_AGENT_SYSTEM_PROMPT,
+      },
+      {
+        role: 'user' as const,
+        content: TAG_AGENT_USER_PROMPT(filePath, fileName, extension, summary, metadata),
+      },
+    ];
 
-        // Parse JSON array from response
-        try {
-          // Try to extract JSON array from response (might have markdown code blocks)
-          let jsonStr = content.trim();
-          if (jsonStr.startsWith('```')) {
-            // Remove markdown code blocks
-            jsonStr = jsonStr.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-          }
-          if (jsonStr.startsWith('[') && jsonStr.endsWith(']')) {
-            const tags = JSON.parse(jsonStr) as string[];
-            if (Array.isArray(tags) && tags.every(t => typeof t === 'string')) {
-              return tags.map(t => t.toLowerCase().trim()).filter(t => t.length > 0);
-            }
-          }
-        } catch (parseError) {
-          // If JSON parsing fails, try to extract tags from text
-          return this.extractTagsFromText(content, filePath, fileName, extension, metadata);
-        }
+    const result = await executeApiCall<string | string[]>(
+      messages,
+      fallback,
+      this.workerPool,
+      this.llmClient
+    );
 
-        return this.generateFallbackTags(filePath, fileName, extension, metadata);
-      };
-
-      // Use worker pool if available, otherwise execute directly
-      let tags = this.workerPool
-        ? await this.workerPool.execute(apiCall)
-        : await apiCall();
-
-      // If the model gave us something but too few tags, top it up heuristically
-      if (tags && tags.length > 0) {
-        if (tags.length < 15) {
-          tags = this.enrichTagsWithHeuristics(tags, filePath, fileName, extension, metadata);
-        }
-        return tags;
-      }
-
-      // Model failed or produced nothing → full heuristic fallback
-      return this.generateFallbackTags(filePath, fileName, extension, metadata);
-    } catch (error) {
-      return this.generateFallbackTags(filePath, fileName, extension, metadata);
+    if (Array.isArray(result)) {
+      return result;
     }
+
+    const content = result?.trim();
+    if (!content) {
+      return fallback();
+    }
+
+    try {
+      let jsonStr = content;
+      if (jsonStr.startsWith('```')) {
+        jsonStr = jsonStr.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+      }
+      if (jsonStr.startsWith('[') && jsonStr.endsWith(']')) {
+        const tags = JSON.parse(jsonStr) as string[];
+        if (Array.isArray(tags) && tags.every(t => typeof t === 'string')) {
+          const normalized = tags.map(t => t.toLowerCase().trim()).filter(t => t.length > 0);
+          if (normalized.length > 0) {
+            if (normalized.length < 15) {
+              return this.enrichTagsWithHeuristics(normalized, filePath, fileName, extension, metadata);
+            }
+            return normalized;
+          }
+        }
+      }
+    } catch (parseError) {
+      return this.extractTagsFromText(content, filePath, fileName, extension, metadata);
+    }
+
+    return fallback();
   }
 
   /**

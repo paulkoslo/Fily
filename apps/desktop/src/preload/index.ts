@@ -41,6 +41,9 @@ import {
   SaveApiKeyRequestSchema,
   SaveApiKeyResponseSchema,
   DeleteApiKeyResponseSchema,
+  GetLLMModelResponseSchema,
+  SaveLLMModelRequestSchema,
+  SaveLLMModelResponseSchema,
   type ScanSourceRequest,
   type ScanSourceResponse,
   type ScanProgress,
@@ -80,6 +83,9 @@ import {
   type SaveApiKeyRequest,
   type SaveApiKeyResponse,
   type DeleteApiKeyResponse,
+  type GetLLMModelResponse,
+  type SaveLLMModelRequest,
+  type SaveLLMModelResponse,
 } from '@virtual-finder/core';
 
 type RunPlannerRequest = {
@@ -481,6 +487,20 @@ const api = {
    */
   deleteApiKey: (): Promise<DeleteApiKeyResponse> => {
     return invoke(IPC_CHANNELS.DELETE_API_KEY, null, DeleteApiKeyResponseSchema);
+  },
+
+  /**
+   * Get the currently configured LLM model.
+   */
+  getLLMModel: (): Promise<GetLLMModelResponse> => {
+    return invoke(IPC_CHANNELS.GET_LLM_MODEL, null, GetLLMModelResponseSchema);
+  },
+
+  /**
+   * Save the LLM model configuration.
+   */
+  saveLLMModel: (request: SaveLLMModelRequest): Promise<SaveLLMModelResponse> => {
+    return invoke(IPC_CHANNELS.SAVE_LLM_MODEL, SaveLLMModelRequestSchema, SaveLLMModelResponseSchema, request);
   },
 };
 

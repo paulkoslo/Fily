@@ -47,6 +47,8 @@ declare global {
     foldersFound?: number;
     filesProcessed: number;
     message: string;
+    step?: string;
+    phase?: string;
   }
 
   interface ScanSourceRequest {
@@ -209,6 +211,8 @@ declare global {
     filesTotal: number;
     currentFile: string;
     message: string;
+    step?: string;
+    phase?: string;
   }
 
   interface ExtractContentResponse {
@@ -227,6 +231,9 @@ declare global {
     filesTotal: number;
     filesPlanned: number;
     message: string;
+    step?: string;
+    phase?: string;
+    progressPercent?: number;
   }
 
   interface RunPlannerResponse {
@@ -235,18 +242,29 @@ declare global {
     error?: string;
   }
 
+  type ApiKeyType = 'openrouter' | 'openai';
+
   interface ApiKeyStatus {
     hasKey: boolean;
     maskedKey?: string;
+    provider?: ApiKeyType;
+  }
+
+  interface MultiApiKeyStatus {
+    openrouter: ApiKeyStatus;
+    openai: ApiKeyStatus;
+    activeProvider: ApiKeyType | null;
   }
 
   interface GetApiKeyStatusResponse extends ApiKeyStatus {
     success: boolean;
     error?: string;
+    multiStatus?: MultiApiKeyStatus;
   }
 
   interface SaveApiKeyRequest {
     apiKey: string;
+    keyType?: ApiKeyType;
   }
 
   interface SaveApiKeyResponse {
@@ -255,9 +273,32 @@ declare global {
     error?: string;
   }
 
+  interface DeleteApiKeyRequest {
+    keyType?: ApiKeyType;
+  }
+
   interface DeleteApiKeyResponse {
     success: boolean;
     status?: ApiKeyStatus;
+    multiStatus?: MultiApiKeyStatus;
+    error?: string;
+  }
+
+  type LLMModel = 'openai/gpt-5-nano' | 'openai/gpt-5-mini' | 'x-ai/grok-4.1-fast' | 'deepseek/deepseek-v3.2';
+
+  interface GetLLMModelResponse {
+    success: boolean;
+    model: LLMModel | null;
+    error?: string;
+  }
+
+  interface SaveLLMModelRequest {
+    model: LLMModel;
+  }
+
+  interface SaveLLMModelResponse {
+    success: boolean;
+    model?: LLMModel;
     error?: string;
   }
 
@@ -351,6 +392,8 @@ declare global {
     getApiKeyStatus: () => Promise<GetApiKeyStatusResponse>;
     saveApiKey: (request: SaveApiKeyRequest) => Promise<SaveApiKeyResponse>;
     deleteApiKey: () => Promise<DeleteApiKeyResponse>;
+    getLLMModel: () => Promise<GetLLMModelResponse>;
+    saveLLMModel: (request: SaveLLMModelRequest) => Promise<SaveLLMModelResponse>;
   }
 
   interface Window {

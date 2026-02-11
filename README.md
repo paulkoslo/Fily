@@ -25,7 +25,9 @@ Fily solves the problem of disorganized files scattered across your system. Inst
 - Node.js 18 or higher
 - npm 9 or higher
 - macOS (other platforms not tested)
-- OpenAI API key (get one from https://platform.openai.com/api-keys)
+- LLM API key (one of the following):
+  - **OpenRouter API key** (recommended) - Access multiple models: https://openrouter.ai/keys
+  - **OpenAI API key** - Direct OpenAI access: https://platform.openai.com/api-keys
 
 ### Quick Start
 
@@ -43,28 +45,21 @@ cd apps/desktop && npm install && cd ../..
 # Rebuild native modules for Electron (required!)
 npm run rebuild
 
-# Generate environment file
-cp .env.example .env
-
-# Edit .env and add your OpenAI API key (required)
-# OPENAI_API_KEY=your-api-key-here
-
-# Build all packages
-npm run build
-
-# Start the application
-npm run start
+# Start the application (builds automatically)
+npm run dev
 ```
+
+**Note**: You can configure your API key directly in the app's Settings tab. The app will prompt you to add an API key when you try to use AI features.
 
 ### Running the Application
 
-After building, start the application:
+Start the application:
 
 ```bash
-npm run start
+npm run dev
 ```
 
-The application will launch and you can begin indexing and organizing your files.
+The application will launch and you can begin indexing and organizing your files. Configure your API key in Settings before using AI features.
 
 ### Packaging for Distribution
 
@@ -78,18 +73,51 @@ This creates a `.app` bundle in `apps/desktop/out/`.
 
 ## Configuration
 
-### Environment Variables
+### LLM API Configuration
 
-Create a `.env` file in the project root (copy from `.env.example`):
+Fily supports multiple LLM providers. You can configure your API key in two ways:
+
+#### Option 1: In-App Configuration (Recommended)
+
+1. Open the app and go to **Settings** (gear icon)
+2. Click **"Add API Key"**
+3. Select your provider (OpenRouter or OpenAI)
+4. Enter your API key
+5. Select your preferred model
+
+The app will prompt you to add an API key when you try to use AI features without one configured.
+
+#### Option 2: Environment Variables
+
+Create a `.env` file in the project root:
 
 ```bash
-# OpenAI API Key (required)
-# Required for: content summarization, intelligent tagging, taxonomy generation
+# OpenRouter API Key (recommended - access to multiple models)
+# Get your API key from: https://openrouter.ai/keys
+OPENROUTER_API_KEY=your-openrouter-key-here
+
+# OpenAI API Key (alternative)
 # Get your API key from: https://platform.openai.com/api-keys
-OPENAI_API_KEY=your-api-key-here
+OPENAI_API_KEY=your-openai-key-here
+
+# LLM Model (optional - defaults to openai/gpt-5-nano for OpenRouter)
+LLM_MODEL=openai/gpt-5-nano
 ```
 
-**Note**: The OpenAI API key is required for the application to function. The app uses OpenAI's API for content summarization, intelligent tagging, and taxonomy generation.
+**Priority**: If both keys are configured, OpenRouter takes priority.
+
+### Supported Models
+
+When using OpenRouter, you can select from:
+
+| Model ID | Description |
+|----------|-------------|
+| `openai/gpt-5-nano` | Fast & cheap (default) |
+| `openai/gpt-5-mini` | Balanced performance |
+| `x-ai/grok-4.1-fast` | xAI's fast model |
+| `deepseek/deepseek-v3.2` | DeepSeek's latest model |
+
+Model selection is available in the Settings tab when using OpenRouter.
 
 ## How It Works
 
@@ -153,7 +181,7 @@ Fily/
 | Database | better-sqlite3 (SQLite) |
 | Schema Validation | Zod |
 | Packaging | electron-builder |
-| AI Integration | OpenAI API |
+| AI Integration | OpenRouter API, OpenAI API |
 
 ## Features in Detail
 
@@ -250,8 +278,10 @@ See [AGENTS.md](./AGENTS.md) for the full architecture vision.
 | Phase | Features |
 |-------|----------|
 | 5 | **Production Readiness & Stability** 🔴 |
+| | - ~~User feedback for missing API key~~ ✅ (prompts to add key when using AI features) |
+| | - OpenRouter + OpenAI multi-provider support ✅ |
+| | - In-app model selection ✅ |
 | | - OpenAI API retry logic and rate limit handling |
-| | - User feedback for missing API key and API failures |
 | | - Error recovery and graceful degradation |
 | | - React Error Boundaries for crash prevention |
 | | - Operation cancellation for long-running tasks |

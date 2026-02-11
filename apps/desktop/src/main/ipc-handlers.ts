@@ -25,7 +25,11 @@ import {
   GetApiKeyStatusResponseSchema,
   SaveApiKeyRequestSchema,
   SaveApiKeyResponseSchema,
+  DeleteApiKeyRequestSchema,
   DeleteApiKeyResponseSchema,
+  GetLLMModelResponseSchema,
+  SaveLLMModelRequestSchema,
+  SaveLLMModelResponseSchema,
   type ScanSourceResponse,
   type ListFilesResponse,
   type ListFoldersResponse,
@@ -50,8 +54,11 @@ import {
   type GetApiKeyStatusResponse,
   type SaveApiKeyResponse,
   type DeleteApiKeyResponse,
+  type GetLLMModelResponse,
+  type SaveLLMModelResponse,
   type FileRecord,
   type PlannerOutput,
+  type PlannerProgress,
   TaxonomyPlanner,
 } from '@virtual-finder/core';
 import { ApiKeyStore } from './api-key-store';
@@ -167,9 +174,11 @@ export function registerIpcHandlers(
   // API key status
   ipcMain.handle(IPC_CHANNELS.GET_API_KEY_STATUS, async (): Promise<GetApiKeyStatusResponse> => {
     const status = apiKeyStore.getStatus();
+    const multiStatus = apiKeyStore.getMultiStatus();
     return GetApiKeyStatusResponseSchema.parse({
       success: true,
       ...status,
+      multiStatus,
     });
   });
 
@@ -186,7 +195,8 @@ export function registerIpcHandlers(
       }
 
       try {
-        const status = apiKeyStore.saveKey(parsed.data.apiKey);
+        const keyType = parsed.data.keyType ?? 'openai';
+        const status = apiKeyStore.saveKey(parsed.data.apiKey, keyType);
         return SaveApiKeyResponseSchema.parse({
           success: true,
           status,
@@ -202,12 +212,22 @@ export function registerIpcHandlers(
   );
 
   // Delete API key
-  ipcMain.handle(IPC_CHANNELS.DELETE_API_KEY, async (): Promise<DeleteApiKeyResponse> => {
+  ipcMain.handle(IPC_CHANNELS.DELETE_API_KEY, async (_event, request?: unknown): Promise<DeleteApiKeyResponse> => {
     try {
-      const status = apiKeyStore.deleteKey();
+      const parsed = DeleteApiKeyRequestSchema.safeParse(request ?? {});
+      // If no keyType specified, delete the currently active provider's key
+      const activeProvider = apiKeyStore.getActiveProvider();
+      console.log(`[IPC] DELETE_API_KEY: activeProvider=${activeProvider}, request keyType=${parsed.success ? parsed.data.keyType : 'parse failed'}`);
+      const keyType = parsed.success && parsed.data.keyType 
+        ? parsed.data.keyType 
+        : (activeProvider ?? 'openai');
+      console.log(`[IPC] DELETE_API_KEY: deleting keyType=${keyType}`);
+      const status = apiKeyStore.deleteKey(keyType);
+      const multiStatus = apiKeyStore.getMultiStatus();
       return DeleteApiKeyResponseSchema.parse({
         success: true,
         status,
+        multiStatus,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
@@ -217,6 +237,52 @@ export function registerIpcHandlers(
       };
     }
   });
+
+  // Get LLM model
+  ipcMain.handle(IPC_CHANNELS.GET_LLM_MODEL, async (): Promise<GetLLMModelResponse> => {
+    try {
+      const model = apiKeyStore.getLLMModel();
+      return GetLLMModelResponseSchema.parse({
+        success: true,
+        model: model as any,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return {
+        success: false,
+        model: null,
+        error: message,
+      };
+    }
+  });
+
+  // Save LLM model
+  ipcMain.handle(
+    IPC_CHANNELS.SAVE_LLM_MODEL,
+    async (_event, request: unknown): Promise<SaveLLMModelResponse> => {
+      const parsed = SaveLLMModelRequestSchema.safeParse(request);
+      if (!parsed.success) {
+        return {
+          success: false,
+          error: `Invalid request: ${parsed.error.message}`,
+        };
+      }
+
+      try {
+        const model = apiKeyStore.saveLLMModel(parsed.data.model);
+        return SaveLLMModelResponseSchema.parse({
+          success: true,
+          model: model as any,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return {
+          success: false,
+          error: message,
+        };
+      }
+    }
+  );
 
   // Preview source deletion (shows what will be deleted)
   ipcMain.handle(
@@ -346,9 +412,14 @@ export function registerIpcHandlers(
         const crawler = new Crawler(db);
         const result = await crawler.scan(sourceId, source.path, (progress: ScanProgress) => {
           console.log('Scan progress:', progress.message);
-          // Send progress to renderer
+          // Send progress to renderer with step information
           if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send(IPC_CHANNELS.SCAN_PROGRESS, progress);
+            const enhancedProgress = {
+              ...progress,
+              step: `Step 1/3: ${progress.status === 'scanning' ? 'Scanning filesystem...' : progress.status === 'indexing' ? 'Indexing files...' : progress.status === 'cleaning' ? 'Cleaning up...' : 'Scan complete'}`,
+              phase: progress.status,
+            } as ScanProgress;
+            mainWindow.webContents.send(IPC_CHANNELS.SCAN_PROGRESS, enhancedProgress);
           }
         });
 
@@ -669,9 +740,9 @@ export function registerIpcHandlers(
         const mainWindow = getMainWindow();
 
         // Emit extraction started
-        const emitProgress = (progress: ExtractionProgress) => {
+        const emitProgress = (progress: ExtractionProgress & { step?: string; phase?: string }) => {
           if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send(IPC_CHANNELS.EXTRACTION_PROGRESS, progress);
+            mainWindow.webContents.send(IPC_CHANNELS.EXTRACTION_PROGRESS, progress as ExtractionProgress);
           }
         };
 
@@ -710,6 +781,8 @@ export function registerIpcHandlers(
             filesTotal: 0,
             currentFile: '',
             message: 'No files need content extraction',
+            step: `Step 2/3: Extracting content...`,
+            phase: 'done',
           });
           return {
             success: true,
@@ -724,6 +797,8 @@ export function registerIpcHandlers(
           filesTotal: files.length,
           currentFile: '',
           message: `Extracting content from ${files.length} files...`,
+          step: `Step 2/3: Extracting content...`,
+          phase: 'extracting',
         });
 
         // Run content extraction
@@ -749,6 +824,8 @@ export function registerIpcHandlers(
             filesTotal: 0,
             currentFile: '',
             message: error instanceof Error ? error.message : 'Unknown error',
+            step: `Step 2/3: Extracting content...`,
+            phase: 'error',
           });
         }
         return {
@@ -1094,9 +1171,9 @@ export function registerIpcHandlers(
     async (_event, request: unknown): Promise<{ success: boolean; filesPlanned: number; error?: string }> => {
       const mainWindow = getMainWindow();
 
-      const emitProgress = (progress: { status: 'planning' | 'storing' | 'done' | 'error'; filesTotal: number; filesPlanned: number; message: string }) => {
+      const emitProgress = (progress: PlannerProgress & { step?: string; phase?: string; progressPercent?: number }) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send((IPC_CHANNELS as any).PLANNER_PROGRESS, progress);
+          mainWindow.webContents.send((IPC_CHANNELS as any).PLANNER_PROGRESS, progress as PlannerProgress);
         }
       };
 
@@ -1116,8 +1193,11 @@ export function registerIpcHandlers(
           status: 'planning',
           filesTotal: 0,
           filesPlanned: 0,
-          message: `Step 1/3 – Loading files for source ${sourceId}...`,
-        });
+          message: `Loading files for source ${sourceId}...`,
+          step: `Step 3/3: Organizing files...`,
+          phase: 'loading',
+          progressPercent: 0,
+        } as PlannerProgress & { step?: string; phase?: string; progressPercent?: number });
 
         const files: FileRecord[] = await db.getFilesBySource(
           sourceId,
@@ -1132,7 +1212,10 @@ export function registerIpcHandlers(
             filesTotal: 0,
             filesPlanned: 0,
             message: 'No files found to organize.',
-          });
+            step: `Step 3/3: Organizing files...`,
+            phase: 'done',
+            progressPercent: 100,
+          } as PlannerProgress & { step?: string; phase?: string; progressPercent?: number });
           return {
             success: true,
             filesPlanned: 0,
@@ -1157,8 +1240,11 @@ export function registerIpcHandlers(
           status: 'storing',
           filesTotal: outputs.length,
           filesPlanned: 0,
-          message: `Step 3/3 – Storing ${outputs.length.toLocaleString()} virtual placements...`,
-        });
+          message: `Storing ${outputs.length.toLocaleString()} virtual placements...`,
+          step: `Step 3/3: Organizing files...`,
+          phase: 'storing',
+          progressPercent: 90,
+        } as PlannerProgress & { step?: string; phase?: string; progressPercent?: number });
 
         await db.upsertVirtualPlacementBatch(outputs, planner.version);
 
@@ -1167,7 +1253,10 @@ export function registerIpcHandlers(
           filesTotal: outputs.length,
           filesPlanned: outputs.length,
           message: 'AI virtual organization complete.',
-        });
+          step: `Step 3/3: Organizing files...`,
+          phase: 'done',
+          progressPercent: 100,
+        } as PlannerProgress & { step?: string; phase?: string; progressPercent?: number });
 
         return {
           success: true,
@@ -1180,7 +1269,10 @@ export function registerIpcHandlers(
           filesTotal: 0,
           filesPlanned: 0,
           message: error instanceof Error ? error.message : 'Unknown planner error',
-        });
+          step: `Step 3/3: Organizing files...`,
+          phase: 'error',
+          progressPercent: 0,
+        } as PlannerProgress & { step?: string; phase?: string; progressPercent?: number });
         return {
           success: false,
           filesPlanned: 0,

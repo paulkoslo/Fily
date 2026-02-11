@@ -7,7 +7,11 @@
 
 Fily is a local-first macOS desktop app that creates a **virtual, AI-organized file browser**. It indexes files without moving/renaming/deleting them, presenting an intelligent virtual folder structure while preserving original file locations.
 
-**Current Implementation**: Uses OpenAI-based AI agents (SummaryAgent, TagAgent, TaxonomyAgent) to extract content, generate summaries/tags, and design intelligent virtual folder hierarchies.
+**Current Implementation**: Uses a unified `LLMClient` abstraction that supports multiple LLM providers:
+- **OpenRouter** (recommended) - Access to multiple models (GPT-5, Grok, DeepSeek, etc.)
+- **OpenAI** - Direct OpenAI API access (fallback option)
+
+AI agents (SummaryAgent, TagAgent, TaxonomyAgent) use this abstraction to extract content, generate summaries/tags, and design intelligent virtual folder hierarchies.
 
 **Future Goal**: Integrate [llama-fs](https://github.com/iyaja/llama-fs) or similar local LLM solutions for privacy-focused, offline AI organization.
 
@@ -45,24 +49,46 @@ Fily is a local-first macOS desktop app that creates a **virtual, AI-organized f
 
 ## Current AI Implementation
 
+### LLMClient Abstraction
+
+The application uses a unified `LLMClient` (`packages/core/src/agents/llm-client.ts`) that abstracts LLM provider differences:
+
+```typescript
+export type LLMProvider = 'openrouter' | 'openai';
+
+export class LLMClient {
+  // Wraps OpenAI SDK, configures baseURL for OpenRouter
+  // Handles model mapping between providers
+  async chatCompletion(messages, options): Promise<string>;
+}
+```
+
+**Provider Priority**: OpenRouter > OpenAI (if both keys are configured)
+
+**Supported Models** (OpenRouter):
+- `openai/gpt-5-nano` - Fast & cheap (default)
+- `openai/gpt-5-mini` - Balanced performance
+- `x-ai/grok-4.1-fast` - xAI's fast model
+- `deepseek/deepseek-v3.2` - DeepSeek's latest
+
 ### Implemented Agents
 
-The application currently uses OpenAI-based agents for content understanding:
+The application uses provider-agnostic agents for content understanding:
 
 1. **SummaryAgent** (`packages/core/src/agents/summary-agent.ts`)
    - Generates intelligent summaries from extracted file content
    - Handles different file types (PDF, DOCX, images, audio, etc.)
-   - Uses OpenAI GPT models for content analysis
+   - Uses LLMClient for provider-agnostic API calls
 
 2. **TagAgent** (`packages/core/src/agents/tag-agent.ts`)
    - Generates relevant tags for files based on content and metadata
    - Produces structured tag arrays for better searchability
-   - Uses OpenAI GPT models for intelligent tagging
+   - Uses LLMClient for provider-agnostic API calls
 
 3. **TaxonomyAgent** (`packages/core/src/agents/taxonomy-agent.ts`)
    - Designs virtual folder taxonomies based on file collections
    - Generates mapping rules for file placement
-   - Uses OpenAI GPT models to understand file relationships
+   - Uses LLMClient for provider-agnostic API calls
 
 ### Implemented Planners
 
@@ -178,6 +204,12 @@ FileCards are built by joining `files` and `file_content` tables, providing a un
 - **"Manual" dropdown**: Individual actions (Scan only, Extract only, Organize only)
 - Progress indicators for all operations
 - Warning dialog when re-organizing existing virtual trees
+- **API key prompt**: Automatically prompts to add API key when using AI features without one configured
+
+**Settings:**
+- **LLM Provider Selection**: Choose between OpenRouter and OpenAI
+- **Model Selection**: Select from available models (OpenRouter only)
+- **API Key Management**: Add, view, and delete API keys in-app
 
 ### Database Schema
 
@@ -296,7 +328,8 @@ type Result<T> = { success: true; data: T } | { success: false; error: string };
 | `db/` | SQLite connection, migrations, CRUD operations |
 | `indexer/` | Crawl directories, compute file_id, manage file records |
 | `extractors/` | Content extraction from various file types (PDF, DOCX, images, audio, etc.) |
-| `agents/` | AI agents (SummaryAgent, TagAgent, TaxonomyAgent) using OpenAI |
+| `agents/` | AI agents (SummaryAgent, TagAgent, TaxonomyAgent) using LLMClient |
+| `agents/llm-client.ts` | Unified LLM abstraction (OpenRouter, OpenAI) with model selection |
 | `agents/prompts/` | Prompt templates for AI agents |
 | `planner/` | Interface + implementations for virtual placement decisions |
 | `planner/taxonomy-*` | Taxonomy-driven planner implementation (TaxonomyPlanner, TaxonomyAgent, TaxonomyOverview) |
@@ -333,12 +366,10 @@ type Result<T> = { success: true; data: T } | { success: false; error: string };
 
 ### Phase 4 Details (AI Integration) ✅ **IMPLEMENTED**
 
-The `TaxonomyPlanner` is now the default planner, using OpenAI-based `TaxonomyAgent`:
+The `TaxonomyPlanner` is now the default planner, using `LLMClient` for provider-agnostic LLM calls:
 
 ```typescript
-// Current: TaxonomyPlanner uses OpenAI to understand content and design taxonomies
 // packages/core/src/planner/taxonomy-planner.ts
-
 class TaxonomyPlanner implements Planner {
   async plan(files: FileRecord[]): Promise<PlannerOutput[]> {
     // 1. Build FileCard[] from DB (includes summaries and tags from SummaryAgent/TagAgent)
@@ -351,10 +382,16 @@ class TaxonomyPlanner implements Planner {
 ```
 
 **Key Components:**
+- `LLMClient`: Unified abstraction for OpenRouter and OpenAI APIs
 - `TaxonomyAgent`: LLM agent that designs virtual folder hierarchies
 - `TaxonomyOverview`: Aggregated file statistics for taxonomy design
 - `TaxonomyPlan`: Structure defining folders and placement rules
 - `TaxonomyPlanner`: Orchestrates the planning process
+
+**Provider Selection:**
+- Users can select OpenRouter or OpenAI in Settings
+- OpenRouter supports multiple models (GPT-5, Grok, DeepSeek)
+- Model selection persisted in user's .env file
 
 ### Phase 6 Details (Future: Local LLM Integration)
 
@@ -380,32 +417,50 @@ class LlamaFSPlanner implements Planner {
 
 | File | Purpose |
 |------|---------|
-| `packages/core/src/planner/index.ts` | Planner interface definition |
-| `packages/core/src/planner/stub-planner.ts` | Rule-based reference implementation |
-| `packages/core/src/planner/taxonomy-planner.ts` | ✅ **Active AI planner** (OpenAI-based) |
-| `packages/core/src/planner/taxonomy-agent.ts` | LLM agent for taxonomy generation |
-| `packages/core/src/planner/taxonomy-overview.ts` | File statistics aggregation |
-| `packages/core/src/planner/taxonomy-types.ts` | Type definitions for taxonomy plans |
+| `packages/core/src/agents/llm-client.ts` | ✅ **LLMClient** - Unified LLM abstraction (OpenRouter, OpenAI) |
 | `packages/core/src/agents/summary-agent.ts` | Content summarization agent |
 | `packages/core/src/agents/tag-agent.ts` | Intelligent tagging agent |
 | `packages/core/src/agents/taxonomy-agent.ts` | Taxonomy design agent |
+| `packages/core/src/agents/api-call-helper.ts` | Helper for executing LLM API calls with fallback |
 | `packages/core/src/agents/prompts/` | Prompt templates for all agents |
+| `packages/core/src/planner/index.ts` | Planner interface definition |
+| `packages/core/src/planner/stub-planner.ts` | Rule-based reference implementation |
+| `packages/core/src/planner/taxonomy-planner.ts` | ✅ **Active AI planner** |
+| `packages/core/src/planner/taxonomy-agent.ts` | LLM agent for taxonomy generation |
+| `packages/core/src/planner/taxonomy-overview.ts` | File statistics aggregation |
+| `packages/core/src/planner/taxonomy-types.ts` | Type definitions for taxonomy plans |
 | `packages/core/src/extractors/` | Content extraction from various file types |
-| `packages/core/src/ipc/contracts.ts` | `PlannerOutput`, `FileCard` schemas |
+| `packages/core/src/ipc/contracts.ts` | `PlannerOutput`, `FileCard`, API key schemas |
 | `packages/core/src/db/migrations.ts` | `virtual_placements` table |
 | `packages/core/src/virtual-tree/index.ts` | Builds tree from planner output |
-| `apps/desktop/src/main/ipc-handlers.ts` | IPC handler for `RUN_PLANNER` |
+| `apps/desktop/src/main/api-key-store.ts` | API key and model persistence |
+| `apps/desktop/src/main/ipc-handlers.ts` | IPC handlers for all operations |
 | `apps/ui/src/App.tsx` | UI integration for planner execution |
+| `apps/ui/src/components/Settings.tsx` | Settings UI (API key, model selection) |
 
 ### Dev Commands
 
-See [README.md](./README.md) for current development commands.
+```bash
+# Start the application (builds and runs)
+npm run dev
+
+# Build all packages
+npm run build
+
+# Rebuild native modules for Electron
+npm run rebuild
+
+# Package for distribution
+cd apps/desktop && npm run package
+```
+
+See [README.md](./README.md) for full installation instructions.
 
 ## Current Status Summary
 
 ✅ **Implemented:**
 - Full content extraction pipeline (PDF, DOCX, images, audio, etc.)
-- AI-powered summarization and tagging (OpenAI-based)
+- AI-powered summarization and tagging
 - Taxonomy-driven virtual organization (TaxonomyPlanner)
 - Virtual tree UI with expand/collapse and navigation
 - Watch mode for automatic file indexing
@@ -413,6 +468,10 @@ See [README.md](./README.md) for current development commands.
 - File card view and full content viewer
 - Progress tracking for all operations
 - Warning dialogs for destructive operations
+- **Multi-provider LLM support** (OpenRouter + OpenAI)
+- **In-app API key configuration** with provider selection
+- **Model selection** (GPT-5 Nano/Mini, Grok 4.1 Fast, DeepSeek V3.2)
+- **API key prompt** when using AI features without a key configured
 
 📋 **Planned:**
 - User feedback loop for improving AI organization

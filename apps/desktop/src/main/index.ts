@@ -24,9 +24,9 @@ try {
 
 apiKeyStore.loadEnv(packagedEnvPath);
 
-// Validate required environment variables
-if (!process.env.OPENAI_API_KEY) {
-  console.warn('[Main] OPENAI_API_KEY is not set. AI features will prompt for a key.');
+// Validate LLM API keys - priority: OPENROUTER_API_KEY > OPENAI_API_KEY
+if (!process.env.OPENROUTER_API_KEY && !process.env.OPENAI_API_KEY) {
+  console.warn('[Main] No LLM API key configured. Set OPENROUTER_API_KEY or OPENAI_API_KEY for AI features.');
 }
 
 // Set app name and userData path BEFORE any app.getPath() calls to ensure consistent paths
@@ -61,7 +61,7 @@ function getPreloadPath(): string {
 function getRendererUrl(): string {
   if (isDev()) {
     // In development, load from Vite dev server
-    return 'http://localhost:5173';
+    return 'http://localhost:5180';
   }
   // In production, load from built files
   const rendererPath = path.join(process.resourcesPath, 'ui', 'index.html');

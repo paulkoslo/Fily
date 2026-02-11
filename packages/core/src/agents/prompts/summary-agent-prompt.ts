@@ -63,6 +63,9 @@ EXAMPLES OF POOR SUMMARIES (avoid these):
 
 Your summaries will be used by AI agents for intelligent file organization, virtual folder creation, tree building, search indexing, and helping users quickly identify files. Make every word count and stay under 200 characters.`;
 
+export const SUMMARY_AGENT_SCANNED_PDF_PROMPT =
+  'You CANNOT see the actual pages of this PDF. There is no embedded text to read. You only see metadata, file name and file path below. Based on that, generate a best-guess file management summary (max 200 characters) that describes what this scanned PDF most likely is. Mention that it is a scanned PDF (image-based), include likely document type (e.g., invoice, letter, medical report), any organizations/people you can infer, and relevant time period (year or range) if visible in the metadata or path.';
+
 /**
  * Generate user prompt for text/code files
  */

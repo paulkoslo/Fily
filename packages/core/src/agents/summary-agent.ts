@@ -1,11 +1,13 @@
-import OpenAI from 'openai';
 import {
   SUMMARY_AGENT_SYSTEM_PROMPT,
   SUMMARY_AGENT_TEXT_PROMPT,
   SUMMARY_AGENT_PDF_PROMPT,
   SUMMARY_AGENT_AUDIO_PROMPT,
+  SUMMARY_AGENT_SCANNED_PDF_PROMPT,
 } from './prompts/summary-agent-prompt';
 import type { WorkerPool } from './worker-pool';
+import { executeApiCall } from './api-call-helper';
+import { createLLMClient, getProviderDisplayName, type LLMClient } from './llm-client';
 
 /**
  * Summary Agent
@@ -14,15 +16,17 @@ import type { WorkerPool } from './worker-pool';
  * Other agents (organization, tagging, etc.) will use the summary data.
  * 
  * Each API call counts as 1 worker in the worker pool.
+ * 
+ * Supports both OpenRouter and OpenAI through the unified LLMClient.
  */
 export class SummaryAgent {
-  private openai: OpenAI | null = null;
+  private llmClient: LLMClient | null = null;
   private workerPool: WorkerPool | null = null;
 
   constructor(workerPool?: WorkerPool) {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (apiKey) {
-      this.openai = new OpenAI({ apiKey });
+    this.llmClient = createLLMClient();
+    if (this.llmClient) {
+      console.log(`[SummaryAgent] Using ${getProviderDisplayName(this.llmClient.getProvider())} with model: ${this.llmClient.getModel()}`);
     }
     this.workerPool = workerPool || null;
   }
@@ -31,49 +35,36 @@ export class SummaryAgent {
    * Generate summary for text/code files
    */
   async summarizeText(extension: string, content: string): Promise<string> {
-    if (!this.openai) {
-      return this.generateFallbackText(extension, content);
-    }
+    const fallback = () => this.generateFallbackText(extension, content);
+    const isCodeFile = ['js', 'ts', 'jsx', 'tsx', 'py', 'java', 'c', 'cpp', 'go', 'rs', 'rb', 'php', 'swift', 'kt'].includes(extension.toLowerCase());
+    const fileType = isCodeFile ? 'code file' : 'text file';
+    const isEmpty = content.length === 0;
 
-    try {
-      const isCodeFile = ['js', 'ts', 'jsx', 'tsx', 'py', 'java', 'c', 'cpp', 'go', 'rs', 'rb', 'php', 'swift', 'kt'].includes(extension.toLowerCase());
-      const fileType = isCodeFile ? 'code file' : 'text file';
-      const isEmpty = content.length === 0;
-      
-      // For classification, send more content - up to 8000 chars to get better context
-      const contentToAnalyze = isEmpty
-        ? '[Empty file]'
-        : content.length > 8000
-        ? content.substring(0, 8000) + '\n[... content truncated ...]'
-        : content;
+    const contentToAnalyze = isEmpty
+      ? '[Empty file]'
+      : content.length > 8000
+      ? content.substring(0, 8000) + '\n[... content truncated ...]'
+      : content;
 
-      const apiCall = async () => {
-        const response = await this.openai!.chat.completions.create({
-          model: 'gpt-5-nano',
-          messages: [
-            {
-              role: 'system',
-              content: SUMMARY_AGENT_SYSTEM_PROMPT,
-            },
-            {
-              role: 'user',
-              content: SUMMARY_AGENT_TEXT_PROMPT(fileType, extension, contentToAnalyze, isEmpty),
-            },
-          ],
-          max_completion_tokens: 5000, // Increased to ensure enough tokens for output even with reasoning
-        });
-        return response.choices[0]?.message?.content?.trim() || this.generateFallbackText(extension, content);
-      };
+    const messages = [
+      {
+        role: 'system' as const,
+        content: SUMMARY_AGENT_SYSTEM_PROMPT,
+      },
+      {
+        role: 'user' as const,
+        content: SUMMARY_AGENT_TEXT_PROMPT(fileType, extension, contentToAnalyze, isEmpty),
+      },
+    ];
 
-      // Use worker pool if available, otherwise execute directly
-      const summary = this.workerPool
-        ? await this.workerPool.execute(apiCall)
-        : await apiCall();
+    const summary = await executeApiCall<string>(
+      messages,
+      fallback,
+      this.workerPool,
+      this.llmClient
+    );
 
-      return summary;
-    } catch (error) {
-      return this.generateFallbackText(extension, content);
-    }
+    return summary || fallback();
   }
 
   /**
@@ -87,51 +78,42 @@ export class SummaryAgent {
       subject?: string;
     }
   ): Promise<string> {
-    if (!this.openai || extractedText.length === 0) {
+    if (extractedText.length === 0) {
       return this.generateFallbackPDF(extractedText, metadata);
     }
 
-    try {
-      const metadataInfo = [
-        metadata?.title && `Title: ${metadata.title}`,
-        metadata?.author && `Author: ${metadata.author}`,
-        metadata?.subject && `Subject: ${metadata.subject}`,
-      ]
-        .filter(Boolean)
-        .join(', ');
+    const fallback = () => this.generateFallbackPDF(extractedText, metadata);
+    const metadataInfo = [
+      metadata?.title && `Title: ${metadata.title}`,
+      metadata?.author && `Author: ${metadata.author}`,
+      metadata?.subject && `Subject: ${metadata.subject}`,
+    ]
+      .filter(Boolean)
+      .join(', ');
 
-      // For very long PDFs, send more content for better classification - up to 8000 chars
-      const textToAnalyze = extractedText.length > 8000
-        ? extractedText.substring(0, 8000) + '\n[... content truncated ...]'
-        : extractedText;
+    const textToAnalyze = extractedText.length > 8000
+      ? extractedText.substring(0, 8000) + '\n[... content truncated ...]'
+      : extractedText;
 
-      const apiCall = async () => {
-        const response = await this.openai!.chat.completions.create({
-          model: 'gpt-5-nano',
-          messages: [
-            {
-              role: 'system',
-              content: SUMMARY_AGENT_SYSTEM_PROMPT,
-            },
-            {
-              role: 'user',
-              content: SUMMARY_AGENT_PDF_PROMPT(metadataInfo, textToAnalyze),
-            },
-          ],
-          max_completion_tokens: 5000, // Increased to ensure enough tokens for output even with reasoning
-        });
-        return response.choices[0]?.message?.content?.trim() || this.generateFallbackPDF(extractedText, metadata);
-      };
+    const messages = [
+      {
+        role: 'system' as const,
+        content: SUMMARY_AGENT_SYSTEM_PROMPT,
+      },
+      {
+        role: 'user' as const,
+        content: SUMMARY_AGENT_PDF_PROMPT(metadataInfo, textToAnalyze),
+      },
+    ];
 
-      // Use worker pool if available, otherwise execute directly
-      const summary = this.workerPool
-        ? await this.workerPool.execute(apiCall)
-        : await apiCall();
+    const summary = await executeApiCall<string>(
+      messages,
+      fallback,
+      this.workerPool,
+      this.llmClient
+    );
 
-      return summary;
-    } catch (error) {
-      return this.generateFallbackPDF(extractedText, metadata);
-    }
+    return summary || fallback();
   }
 
   /**
@@ -150,172 +132,128 @@ export class SummaryAgent {
     fileName?: string | null;
     filePath?: string | null;
   }): Promise<string> {
-    if (!this.openai) {
-      // Reuse fallback, but make clear it's scanned
-      return this.generateFallbackPDF('', { title: metadata.title ?? undefined, pages: metadata.pages ?? undefined });
-    }
+    const fallback = () =>
+      this.generateFallbackPDF('', { title: metadata.title ?? undefined, pages: metadata.pages ?? undefined });
 
-    try {
-      const metaLines: string[] = [];
-      if (metadata.fileName) metaLines.push(`File name: ${metadata.fileName}`);
-      if (metadata.filePath) metaLines.push(`File path: ${metadata.filePath}`);
-      if (metadata.title) metaLines.push(`PDF title: ${metadata.title}`);
-      if (metadata.author) metaLines.push(`Author: ${metadata.author}`);
-      if (metadata.subject) metaLines.push(`Subject: ${metadata.subject}`);
-      if (metadata.pages != null) metaLines.push(`Pages: ${metadata.pages}`);
-      if (metadata.creator) metaLines.push(`Creator: ${metadata.creator}`);
-      if (metadata.producer) metaLines.push(`Producer: ${metadata.producer}`);
-      if (metadata.creationDate) metaLines.push(`Creation date (raw): ${metadata.creationDate}`);
-      if (metadata.modDate) metaLines.push(`Modified date (raw): ${metadata.modDate}`);
+    const metaLines: string[] = [];
+    if (metadata.fileName) metaLines.push(`File name: ${metadata.fileName}`);
+    if (metadata.filePath) metaLines.push(`File path: ${metadata.filePath}`);
+    if (metadata.title) metaLines.push(`PDF title: ${metadata.title}`);
+    if (metadata.author) metaLines.push(`Author: ${metadata.author}`);
+    if (metadata.subject) metaLines.push(`Subject: ${metadata.subject}`);
+    if (metadata.pages != null) metaLines.push(`Pages: ${metadata.pages}`);
+    if (metadata.creator) metaLines.push(`Creator: ${metadata.creator}`);
+    if (metadata.producer) metaLines.push(`Producer: ${metadata.producer}`);
+    if (metadata.creationDate) metaLines.push(`Creation date (raw): ${metadata.creationDate}`);
+    if (metadata.modDate) metaLines.push(`Modified date (raw): ${metadata.modDate}`);
 
-      const metadataBlock = metaLines.join('\n');
+    const metadataBlock = metaLines.join('\n');
 
-      const apiCall = async () => {
-        const response = await this.openai!.chat.completions.create({
-          model: 'gpt-5-nano',
-          messages: [
-            {
-              role: 'system',
-              content: SUMMARY_AGENT_SYSTEM_PROMPT,
-            },
-            {
-              role: 'user',
-              content: [
-                {
-                  type: 'text',
-                  text:
-                    'You CANNOT see the actual pages of this PDF. There is no embedded text to read. ' +
-                    'You only see metadata, file name and file path below. Based on that, ' +
-                    'generate a best-guess file management summary (max 200 characters) that describes what this scanned PDF most likely is. ' +
-                    'Mention that it is a scanned PDF (image-based), include likely document type (e.g., invoice, letter, medical report), ' +
-                    'any organizations/people you can infer, and relevant time period (year or range) if visible in the metadata or path.',
-                },
-                {
-                  type: 'text',
-                  text: `SCANNED PDF METADATA:\n${metadataBlock || '[no metadata available]'}`,
-                },
-              ],
-            },
-          ],
-          max_completion_tokens: 5000,
-        });
-        const content = response.choices[0]?.message?.content?.trim();
-        if (!content) {
-          return this.generateFallbackPDF('', { title: metadata.title ?? undefined, pages: metadata.pages ?? undefined });
-        }
-        return content;
-      };
+    const messages = [
+      {
+        role: 'system' as const,
+        content: SUMMARY_AGENT_SYSTEM_PROMPT,
+      },
+      {
+        role: 'user' as const,
+        content: [
+          {
+            type: 'text' as const,
+            text: SUMMARY_AGENT_SCANNED_PDF_PROMPT,
+          },
+          {
+            type: 'text' as const,
+            text: `SCANNED PDF METADATA:\n${metadataBlock || '[no metadata available]'}`,
+          },
+        ],
+      },
+    ];
 
-      const summary = this.workerPool
-        ? await this.workerPool.execute(apiCall)
-        : await apiCall();
+    const summary = await executeApiCall<string>(
+      messages,
+      fallback,
+      this.workerPool,
+      this.llmClient
+    );
 
-      return summary;
-    } catch {
-      return this.generateFallbackPDF('', { title: metadata.title ?? undefined, pages: metadata.pages ?? undefined });
-    }
+    return summary || fallback();
   }
 
   /**
-   * Generate summary for images using GPT-5-nano's native image input
+   * Generate summary for images using vision-capable models
    */
   async summarizeImage(imageBuffer: Buffer, mimeType: string, extension: string): Promise<string> {
-    if (!this.openai) {
-      return this.generateFallbackImage('', extension);
-    }
+    const fallback = () => this.generateFallbackImage('', extension);
+    const base64Image = imageBuffer.toString('base64');
 
-    try {
-      const base64Image = imageBuffer.toString('base64');
-      
-      const apiCall = async () => {
-        const response = await this.openai!.chat.completions.create({
-          model: 'gpt-5-nano',
-          messages: [
-            {
-              role: 'system',
-              content: SUMMARY_AGENT_SYSTEM_PROMPT,
+    const messages = [
+      {
+        role: 'system' as const,
+        content: SUMMARY_AGENT_SYSTEM_PROMPT,
+      },
+      {
+        role: 'user' as const,
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Analyze this image and generate a distinctive file management summary. Focus on: image type (screenshot/photo/scan/diagram), visible text content, context (app/program/document), people/dates if visible, and what makes this image unique and searchable.',
+          },
+          {
+            type: 'image_url' as const,
+            image_url: {
+              url: `data:${mimeType};base64,${base64Image}`,
             },
-            {
-              role: 'user',
-              content: [
-                {
-                  type: 'text',
-                  text: 'Analyze this image and generate a distinctive file management summary. Focus on: image type (screenshot/photo/scan/diagram), visible text content, context (app/program/document), people/dates if visible, and what makes this image unique and searchable.',
-                },
-                {
-                  type: 'image_url',
-                  image_url: {
-                    url: `data:${mimeType};base64,${base64Image}`,
-                  },
-                },
-              ],
-            },
-          ],
-          max_completion_tokens: 5000, // Increased to ensure enough tokens for output even with reasoning
-        });
-        return response.choices[0]?.message?.content?.trim() || this.generateFallbackImage('', extension);
-      };
+          },
+        ],
+      },
+    ];
 
-      // Use worker pool if available, otherwise execute directly
-      const summary = this.workerPool
-        ? await this.workerPool.execute(apiCall)
-        : await apiCall();
+    const summary = await executeApiCall<string>(
+      messages,
+      fallback,
+      this.workerPool,
+      this.llmClient
+    );
 
-      return summary;
-    } catch (error) {
-      return this.generateFallbackImage('', extension);
-    }
+    return summary || fallback();
   }
 
   /**
    * Generate summary for audio/video files
    */
   async summarizeAudio(transcription: string, extension: string): Promise<string> {
-    if (!this.openai) {
-      return this.generateFallbackAudio(transcription, extension);
-    }
-
     if (transcription.length === 0) {
       const isVideo = ['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v', 'wmv', 'flv'].includes(extension.toLowerCase());
       return `${isVideo ? 'Video' : 'Audio'} file (${extension.toUpperCase()}) - no speech detected`;
     }
 
-    try {
-      const isVideo = ['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v', 'wmv', 'flv'].includes(extension.toLowerCase());
-      const mediaType = isVideo ? 'video' : 'audio';
-      
-      // For very long transcriptions, only send first 2000 chars to API
-      const textToAnalyze = transcription.length > 2000
-        ? transcription.substring(0, 2000) + '\n[... transcription truncated ...]'
-        : transcription;
+    const fallback = () => this.generateFallbackAudio(transcription, extension);
+    const isVideo = ['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v', 'wmv', 'flv'].includes(extension.toLowerCase());
+    const mediaType = isVideo ? 'video' : 'audio';
 
-      const apiCall = async () => {
-        const response = await this.openai!.chat.completions.create({
-          model: 'gpt-5-nano',
-          messages: [
-            {
-              role: 'system',
-              content: SUMMARY_AGENT_SYSTEM_PROMPT,
-            },
-            {
-              role: 'user',
-              content: SUMMARY_AGENT_AUDIO_PROMPT(mediaType, textToAnalyze),
-            },
-          ],
-          max_completion_tokens: 5000, // Increased to ensure enough tokens for output even with reasoning
-        });
-        return response.choices[0]?.message?.content?.trim() || this.generateFallbackAudio(transcription, extension);
-      };
+    const textToAnalyze = transcription.length > 2000
+      ? transcription.substring(0, 2000) + '\n[... transcription truncated ...]'
+      : transcription;
 
-      // Use worker pool if available, otherwise execute directly
-      const summary = this.workerPool
-        ? await this.workerPool.execute(apiCall)
-        : await apiCall();
+    const messages = [
+      {
+        role: 'system' as const,
+        content: SUMMARY_AGENT_SYSTEM_PROMPT,
+      },
+      {
+        role: 'user' as const,
+        content: SUMMARY_AGENT_AUDIO_PROMPT(mediaType, textToAnalyze),
+      },
+    ];
 
-      return summary;
-    } catch (error) {
-      return this.generateFallbackAudio(transcription, extension);
-    }
+    const summary = await executeApiCall<string>(
+      messages,
+      fallback,
+      this.workerPool,
+      this.llmClient
+    );
+
+    return summary || fallback();
   }
 
   // Fallback methods

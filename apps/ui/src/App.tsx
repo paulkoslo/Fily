@@ -44,6 +44,8 @@ function App() {
   const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
   const [apiKeyModalError, setApiKeyModalError] = useState<string | null>(null);
   const [apiKeySettingsError, setApiKeySettingsError] = useState<string | null>(null);
+  const [currentModel, setCurrentModel] = useState<LLMModel | null>(null);
+  const [isModelBusy, setIsModelBusy] = useState(false);
   const [isSavingApiKey, setIsSavingApiKey] = useState(false);
   const [isApiKeyMutating, setIsApiKeyMutating] = useState(false);
   const [statusBarPath, setStatusBarPath] = useState<string[]>([]);
@@ -289,13 +291,13 @@ function App() {
     loadSources();
   }, []);
 
-  // Fetch API key status on mount
+  // Fetch API key status and model on mount
   useEffect(() => {
     const fetchApiKeyStatus = async () => {
       try {
         const status = await window.api.getApiKeyStatus();
         if (status.success) {
-          setApiKeyStatus({ hasKey: status.hasKey, maskedKey: status.maskedKey });
+          setApiKeyStatus({ hasKey: status.hasKey, maskedKey: status.maskedKey, provider: status.provider });
           setIsApiKeyModalOpen(!status.hasKey);
         } else {
           setApiKeyStatus({ hasKey: false });
@@ -307,7 +309,20 @@ function App() {
         setIsApiKeyModalOpen(true);
       }
     };
+
+    const fetchModel = async () => {
+      try {
+        const response = await window.api.getLLMModel();
+        if (response.success && response.model) {
+          setCurrentModel(response.model);
+        }
+      } catch (err) {
+        console.error('Failed to load LLM model:', err);
+      }
+    };
+
     fetchApiKeyStatus();
+    fetchModel();
   }, []);
 
   // Load files and folders when source, path, or search query changes
@@ -334,9 +349,9 @@ function App() {
   }, [viewMode, searchQuery, selectedSourceId]);
 
   const saveApiKey = useCallback(
-    async (apiKey: string, target: 'modal' | 'settings'): Promise<boolean> => {
+    async (apiKey: string, target: 'modal' | 'settings', keyType: ApiKeyType = 'openai'): Promise<boolean> => {
       try {
-        const response = await window.api.saveApiKey({ apiKey });
+        const response = await window.api.saveApiKey({ apiKey, keyType });
         if (response.success && response.status) {
           setApiKeyStatus(response.status);
           setIsApiKeyModalOpen(false);
@@ -365,10 +380,10 @@ function App() {
   );
 
   const handleModalSaveApiKey = useCallback(
-    async (apiKey: string) => {
+    async (apiKey: string, keyType: ApiKeyType) => {
       setIsSavingApiKey(true);
       setApiKeyModalError(null);
-      await saveApiKey(apiKey, 'modal');
+      await saveApiKey(apiKey, 'modal', keyType);
       setIsSavingApiKey(false);
     },
     [saveApiKey]
@@ -392,7 +407,7 @@ function App() {
       const response = await window.api.deleteApiKey();
       if (response.success && response.status) {
         setApiKeyStatus(response.status);
-        setIsApiKeyModalOpen(true);
+        // Don't automatically open the modal - let user add key when they want
         setApiKeyModalError(null);
         setIsApiKeyMutating(false);
         return true;
@@ -405,6 +420,23 @@ function App() {
     } finally {
       setIsApiKeyMutating(false);
     }
+    return false;
+  }, []);
+
+  const handleModelChange = useCallback(async (model: LLMModel): Promise<boolean> => {
+    setIsModelBusy(true);
+    try {
+      const response = await window.api.saveLLMModel({ model });
+      if (response.success && response.model) {
+        setCurrentModel(response.model);
+        setIsModelBusy(false);
+        return true;
+      }
+      console.error('Failed to save model:', response.error);
+    } catch (err) {
+      console.error('Failed to save model:', err);
+    }
+    setIsModelBusy(false);
     return false;
   }, []);
 
@@ -650,6 +682,13 @@ function App() {
   const handleExtractContent = useCallback(async () => {
     if (!selectedSourceId || isExtracting) return;
 
+    // Check if an API key is configured (needed for AI summaries and tags)
+    if (!apiKeyStatus?.hasKey) {
+      setApiKeyModalError(null);
+      setIsApiKeyModalOpen(true);
+      return;
+    }
+
     setIsExtracting(true);
     setExtractionProgress(null);
     setError(null);
@@ -667,10 +706,17 @@ function App() {
     } finally {
       setIsExtracting(false);
     }
-  }, [selectedSourceId, isExtracting]);
+  }, [selectedSourceId, isExtracting, apiKeyStatus]);
 
   const handleOrganize = useCallback(async () => {
     if (!selectedSourceId || isOrganizing) return;
+
+    // Check if an API key is configured
+    if (!apiKeyStatus?.hasKey) {
+      setApiKeyModalError(null);
+      setIsApiKeyModalOpen(true);
+      return;
+    }
 
     try {
       // Check if this source already has an AI virtual organization.
@@ -723,7 +769,7 @@ function App() {
       setError(err instanceof Error ? err.message : 'Failed to run AI planner');
       setIsOrganizing(false);
     }
-  }, [selectedSourceId, isOrganizing, virtualTree, loadVirtualTree]);
+  }, [selectedSourceId, isOrganizing, virtualTree, loadVirtualTree, apiKeyStatus]);
 
   /**
    * Run the full AI pipeline in one click:
@@ -733,6 +779,13 @@ function App() {
    */
   const handleFullOrganize = useCallback(async () => {
     if (!selectedSourceId || isScanning || isExtracting || isOrganizing) return;
+
+    // Check if an API key is configured
+    if (!apiKeyStatus?.hasKey) {
+      setApiKeyModalError(null);
+      setIsApiKeyModalOpen(true);
+      return;
+    }
 
     // Step 1: Scan filesystem + index files
     await handleScan();
@@ -750,6 +803,7 @@ function App() {
     handleScan,
     handleExtractContent,
     handleOrganize,
+    apiKeyStatus,
   ]);
 
   const handleViewModeToggle = useCallback(() => {
@@ -998,10 +1052,13 @@ function App() {
         )}
 
         {/* Scan Progress */}
-        {scanProgress && (
+        {scanProgress && scanProgress.status !== 'done' && (
           <div className="progress-banner">
             <div className="progress-content">
-              {scanProgress.filesFound > 0 && scanProgress.status === 'indexing' && (
+              <div className="progress-step-indicator">
+                {scanProgress.step || 'Step 1/3: Scanning files...'}
+              </div>
+              {(scanProgress.filesFound > 0 && scanProgress.status === 'indexing') ? (
                 <div className="progress-details">
                   <div className="progress-bar-container">
                     <div
@@ -1014,6 +1071,12 @@ function App() {
                   <span className="progress-count">
                     {scanProgress.filesProcessed} / {scanProgress.filesFound}
                   </span>
+                </div>
+              ) : (
+                <div className="progress-details">
+                  <div className="progress-bar-container">
+                    <div className="progress-bar-indeterminate" />
+                  </div>
                 </div>
               )}
               <div className="progress-status">
@@ -1029,10 +1092,13 @@ function App() {
         )}
 
         {/* Extraction Progress */}
-        {extractionProgress && (
+        {extractionProgress && extractionProgress.status !== 'done' && (
           <div className="progress-banner">
             <div className="progress-content">
-              {extractionProgress.filesTotal > 0 && (
+              <div className="progress-step-indicator">
+                {extractionProgress.step || 'Step 2/3: Extracting content...'}
+              </div>
+              {extractionProgress.filesTotal > 0 ? (
                 <div className="progress-details">
                   <div className="progress-bar-container">
                     <div
@@ -1045,6 +1111,12 @@ function App() {
                   <span className="progress-count">
                     {extractionProgress.filesProcessed} / {extractionProgress.filesTotal}
                   </span>
+                </div>
+              ) : (
+                <div className="progress-details">
+                  <div className="progress-bar-container">
+                    <div className="progress-bar-indeterminate" />
+                  </div>
                 </div>
               )}
               <div className="progress-status">
@@ -1060,11 +1132,27 @@ function App() {
         )}
 
         {/* Planner Progress */}
-        {plannerProgress && (
+        {plannerProgress && plannerProgress.status !== 'done' && (
           <div className="progress-banner">
             <div className="progress-content">
-              {/* For planning phase, we usually can't report granular progress – treat as indeterminate */}
-              {plannerProgress.filesTotal > 0 && plannerProgress.status !== 'planning' && (
+              <div className="progress-step-indicator">
+                {plannerProgress.step || 'Step 3/3: Organizing files...'}
+              </div>
+              {plannerProgress.status === 'planning' && plannerProgress.progressPercent !== undefined ? (
+                <div className="progress-details">
+                  <div className="progress-bar-container">
+                    <div
+                      className="progress-bar"
+                      style={{
+                        width: `${plannerProgress.progressPercent}%`,
+                      }}
+                    />
+                  </div>
+                  <span className="progress-count">
+                    {plannerProgress.phase === 'planning' ? 'AI planning in progress...' : `${plannerProgress.filesPlanned} / ${plannerProgress.filesTotal}`}
+                  </span>
+                </div>
+              ) : plannerProgress.filesTotal > 0 && plannerProgress.status !== 'planning' ? (
                 <div className="progress-details">
                   <div className="progress-bar-container">
                     <div
@@ -1079,6 +1167,12 @@ function App() {
                   <span className="progress-count">
                     {plannerProgress.filesPlanned} / {plannerProgress.filesTotal}
                   </span>
+                </div>
+              ) : (
+                <div className="progress-details">
+                  <div className="progress-bar-container">
+                    <div className="progress-bar-indeterminate" />
+                  </div>
                 </div>
               )}
               <div className="progress-status">
@@ -1191,6 +1285,9 @@ function App() {
         isApiKeyBusy={isApiKeyMutating}
         onSaveApiKey={handleSettingsSaveApiKey}
         onDeleteApiKey={handleDeleteApiKey}
+        currentModel={currentModel}
+        onModelChange={handleModelChange}
+        isModelBusy={isModelBusy}
       />
       <ApiKeyModal
         isOpen={isApiKeyModalOpen}

@@ -49,7 +49,41 @@ Constraints:
 - Top-level folders: aim for 5–20, each with a clear purpose.
 - Depth: usually 2–3 levels; avoid very deep trees.
 - Rules: aim for 20–80 rules; each should be reasonably broad (cover more than a single file) but not so broad that everything matches.
-- Every file should ideally match at least one rule; create a generic "/Other" or "/Uncategorized" folder + catch-all rule with low priority.
+- Every file should ideally match at least one rule; create a generic "/Other" or "/Uncategorized" folder + catch-all rule with low priority (priority: 1-10).
+
+Priority Guidelines:
+- Catch-all rules: 1-10 (lowest priority)
+- Generic category rules: 20-40 (e.g., "all PDFs in Documents")
+- Specific category rules: 50-70 (e.g., "invoices from 2024")
+- Very specific rules: 80-100 (e.g., "work invoices from Q4 2024, not drafts")
+
+Rule Design Best Practices:
+1. More specific rules should have higher priority
+2. Use multiple conditions (tags + extension + path) for better specificity
+3. Avoid rules that match >50% of files (too broad)
+4. Avoid rules that match <2 files (too narrow)
+5. Use forbiddenTags to exclude edge cases (e.g., exclude "draft" from final documents)
+
+Example Good Rule (specific, high priority):
+{
+  "id": "work-invoices-2024-final",
+  "targetFolderId": "work-invoices-2024",
+  "requiredTags": ["invoice", "2024"],
+  "forbiddenTags": ["draft"],
+  "extensionIn": ["pdf"],
+  "pathContains": ["invoices"],
+  "priority": 85,
+  "reasonTemplate": "Final invoice PDFs from 2024"
+}
+
+Example Bad Rule (too broad, low priority):
+{
+  "id": "all-pdfs",
+  "targetFolderId": "documents",
+  "extensionIn": ["pdf"],
+  "priority": 20,
+  "reasonTemplate": "All PDF files"
+}
 
 Never include comments or trailing commas in JSON. Never wrap JSON in markdown fences. Output ONLY the JSON object.
 `.trim();
@@ -98,7 +132,11 @@ export const TAXONOMY_AGENT_USER_PROMPT = (
     '- Use tags, path patterns, extensions, and summary keywords to define rules.',
     '- Keep the folder structure reasonably small and interpretable.',
     '- Prefer stable, semantic folder names that will still make sense as more files are added.',
-    '- Use priorities so that more specific rules win over generic ones.',
+    '- Use priorities (1-100) so that more specific rules win over generic ones.',
+    '- More specific rules (multiple conditions) should have higher priority (70-100).',
+    '- Generic rules (single condition) should have lower priority (20-50).',
+    '- Catch-all rules should have the lowest priority (1-10).',
+    '- Avoid creating rules that match >50% of files (too broad) or <2 files (too narrow).',
     '',
     'Respond with a single JSON object matching the TaxonomyPlan type exactly (no extra fields, no comments, no markdown).',
   ].join('\n');

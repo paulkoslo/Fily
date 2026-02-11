@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import { themes, getAllThemeIds, type Theme } from '../themes';
 
+/** Available models for selection */
+const AVAILABLE_MODELS: { id: LLMModel; name: string; provider: string }[] = [
+  { id: 'openai/gpt-5-nano', name: 'GPT-5 Nano (Fast & Cheap)', provider: 'OpenAI' },
+  { id: 'openai/gpt-5-mini', name: 'GPT-5 Mini (Balanced)', provider: 'OpenAI' },
+  { id: 'x-ai/grok-4.1-fast', name: 'Grok 4.1 Fast', provider: 'xAI' },
+  { id: 'deepseek/deepseek-v3.2', name: 'DeepSeek V3.2', provider: 'DeepSeek' },
+];
+
 interface SettingsProps {
   isOpen: boolean;
   currentThemeId: string;
@@ -11,6 +19,9 @@ interface SettingsProps {
   isApiKeyBusy: boolean;
   onSaveApiKey: (apiKey: string) => Promise<boolean>;
   onDeleteApiKey: () => Promise<boolean>;
+  currentModel: LLMModel | null;
+  onModelChange: (model: LLMModel) => Promise<boolean>;
+  isModelBusy: boolean;
 }
 
 export function Settings({
@@ -23,9 +34,18 @@ export function Settings({
   isApiKeyBusy,
   onSaveApiKey,
   onDeleteApiKey,
+  currentModel,
+  onModelChange,
+  isModelBusy,
 }: SettingsProps) {
   const [isEditingKey, setIsEditingKey] = useState(false);
   const [apiKeyInput, setApiKeyInput] = useState('');
+  const [selectedModel, setSelectedModel] = useState<LLMModel | null>(currentModel);
+
+  // Sync selected model with prop
+  useEffect(() => {
+    setSelectedModel(currentModel);
+  }, [currentModel]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -74,6 +94,15 @@ export function Settings({
     }
   }, [onDeleteApiKey]);
 
+  const handleModelChange = useCallback(
+    async (event: React.ChangeEvent<HTMLSelectElement>) => {
+      const model = event.target.value as LLMModel;
+      setSelectedModel(model);
+      await onModelChange(model);
+    },
+    [onModelChange]
+  );
+
   // Close on Escape key
   useEffect(() => {
     if (!isOpen) return;
@@ -121,15 +150,16 @@ export function Settings({
             </div>
           </div>
           <div className="settings-section">
-            <h3 className="settings-section-title">OpenAI API Key</h3>
+            <h3 className="settings-section-title">LLM API Key</h3>
             <div className="api-key-management">
               <div className="api-key-status">
                 {apiKeyStatus?.hasKey ? (
                   <>
                     <span>
-                      Saved key: <span className="api-key-mask">{apiKeyStatus.maskedKey ?? '••••••••'}</span>
+                      Saved key ({apiKeyStatus.provider === 'openrouter' ? 'OpenRouter' : 'OpenAI'}):{' '}
+                      <span className="api-key-mask">{apiKeyStatus.maskedKey ?? '••••••••'}</span>
                     </span>
-                    <p>Update or remove your OpenAI key. The key is stored locally and never leaves this device.</p>
+                    <p>Update or remove your API key. The key is stored locally and never leaves this device.</p>
                   </>
                 ) : (
                   <p>No API key saved. Add one to enable AI features.</p>
@@ -167,6 +197,31 @@ export function Settings({
                 </form>
               )}
               {apiKeyError && <p className="settings-error">{apiKeyError}</p>}
+            </div>
+          </div>
+          <div className="settings-section">
+            <h3 className="settings-section-title">LLM Model</h3>
+            <div className="model-selection">
+              <p className="settings-description">
+                Choose which AI model to use for summarization and organization. Different models have different
+                capabilities and costs.
+              </p>
+              <select
+                className="model-select"
+                value={selectedModel ?? ''}
+                onChange={handleModelChange}
+                disabled={isModelBusy || !apiKeyStatus?.hasKey}
+              >
+                {!selectedModel && <option value="">Select a model...</option>}
+                {AVAILABLE_MODELS.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.name} ({model.provider})
+                  </option>
+                ))}
+              </select>
+              {!apiKeyStatus?.hasKey && (
+                <p className="settings-hint">Add an API key to enable model selection.</p>
+              )}
             </div>
           </div>
         </div>

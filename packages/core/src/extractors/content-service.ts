@@ -36,7 +36,9 @@ export class ContentService {
           filesProcessed,
           filesTotal: files.length,
           currentFile: file.name,
-          message: `[Extracting] Reading content from ${file.name}...`,
+          message: `Reading content from ${file.name}...`,
+          step: `Step 2/3: Extracting content...`,
+          phase: 'extracting',
         });
 
         const result = await this.extractorManager.extract(file.path, file.extension);
@@ -106,7 +108,9 @@ export class ContentService {
               filesProcessed,
               filesTotal: files.length,
               currentFile: file.name,
-              message: `[Summary Agent] Generating summary for ${file.name}...`,
+              message: `Generating summary for ${file.name}...`,
+              step: `Step 2/3: Extracting content...`,
+              phase: 'summarizing',
             });
             
             summary = await this.orchestrator.generateSummary(result.content, metadata);
@@ -119,7 +123,9 @@ export class ContentService {
                   filesProcessed,
                   filesTotal: files.length,
                   currentFile: file.name,
-                  message: `[Tag Agent] Generating tags for ${file.name}...`,
+                  message: `Generating tags for ${file.name}...`,
+                  step: `Step 2/3: Extracting content...`,
+                  phase: 'tagging',
                 });
                 
                 tags = await this.orchestrator.generateTags(
@@ -143,7 +149,9 @@ export class ContentService {
             filesProcessed,
             filesTotal: files.length,
             currentFile: file.name,
-            message: `[Storing] Saving ${file.name} to database...`,
+            message: `Saving ${file.name} to database...`,
+            step: `Step 2/3: Extracting content...`,
+            phase: 'storing',
           });
           
           await this.db.upsertFileContent(
@@ -204,7 +212,9 @@ export class ContentService {
         filesProcessed,
         filesTotal: files.length,
         currentFile: '',
-        message: `[Waiting] Processing final AI operations (${stats.active} active, ${stats.queued} queued)...`,
+        message: `Processing final AI operations (${stats.active} active, ${stats.queued} queued)...`,
+        step: `Step 2/3: Extracting content...`,
+        phase: 'waiting',
       });
       await this.workerPool.waitForCompletion();
     }
@@ -215,6 +225,8 @@ export class ContentService {
       filesTotal: files.length,
       currentFile: '',
       message: `Extracted content from ${filesProcessed} files (${errors} errors)`,
+      step: `Step 2/3: Extracting content...`,
+      phase: 'done',
     });
 
     return { filesProcessed, errors };
