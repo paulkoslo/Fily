@@ -8,3 +8,4 @@ export * from './image-extractor';
 export * from './audio-extractor';
 export * from './extractor-manager';
 export * from './content-service';
+export * from './extractor-utils';

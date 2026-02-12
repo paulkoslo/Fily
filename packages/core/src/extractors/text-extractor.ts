@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import type { Extractor, ExtractionResult, ExtractedContent } from './types';
+import { truncateToWordLimit, withTimeout } from './extractor-utils';
 
 /**
  * Text Extractor - extracts text from plain text files and code files
@@ -51,9 +52,17 @@ export class TextExtractor implements Extractor {
         };
       }
 
-      // Read file as UTF-8
+      // Read file as UTF-8 with timeout protection
       // Extractors only extract raw content - classification is done by agents
-      const content = await fs.promises.readFile(filePath, 'utf-8');
+      const rawContent = await withTimeout(
+        fs.promises.readFile(filePath, 'utf-8'),
+        60000, // 60 second timeout
+        10000, // 10 second warning
+        filePath
+      );
+      
+      // Truncate to 1000 words max for scalability
+      const content = truncateToWordLimit(rawContent);
       
       // No summary here - that's the agent's job
       const summary: string | null = null;
@@ -70,6 +79,8 @@ export class TextExtractor implements Extractor {
           size: stats.size,
           lineCount: content.split('\n').length,
           extension,
+          originalWordCount: rawContent.split(/\s+/).filter(w => w.length > 0).length,
+          truncated: rawContent.length !== content.length,
         },
       };
 

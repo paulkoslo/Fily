@@ -122,6 +122,36 @@ const PlannerProgressSchema = z.object({
   message: z.string(),
 });
 
+type RunOptimizerRequest = {
+  sourceId?: number;
+};
+
+type RunOptimizerResponse = {
+  success: boolean;
+  filesOptimized: number;
+  error?: string;
+};
+
+type OptimizerProgress = {
+  status: 'optimizing' | 'done' | 'error';
+  filesTotal: number;
+  filesOptimized: number;
+  message: string;
+};
+
+const RunOptimizerResponseSchema = z.object({
+  success: z.boolean(),
+  filesOptimized: z.number(),
+  error: z.string().optional(),
+});
+
+const OptimizerProgressSchema = z.object({
+  status: z.enum(['optimizing', 'done', 'error']),
+  filesTotal: z.number(),
+  filesOptimized: z.number(),
+  message: z.string(),
+});
+
 /**
  * Type-safe IPC wrapper with zod validation.
  * 
@@ -481,6 +511,37 @@ const api = {
     // Return unsubscribe function
     return () => {
       ipcRenderer.removeListener((IPC_CHANNELS as any).PLANNER_PROGRESS, handler);
+    };
+  },
+
+  /**
+   * Run optimizer only (optimize existing low-confidence placements).
+   */
+  runOptimizer: (request: RunOptimizerRequest): Promise<RunOptimizerResponse> => {
+    return invoke(
+      (IPC_CHANNELS as any).RUN_OPTIMIZER,
+      null,
+      RunOptimizerResponseSchema,
+      request
+    );
+  },
+
+  /**
+   * Subscribe to optimizer progress updates.
+   */
+  onOptimizerProgress: (callback: (progress: OptimizerProgress) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, progress: unknown) => {
+      const parsed = OptimizerProgressSchema.safeParse(progress);
+      if (parsed.success) {
+        callback(parsed.data);
+      } else {
+        console.error('Invalid optimizer progress from main process:', progress);
+      }
+    };
+    ipcRenderer.on((IPC_CHANNELS as any).OPTIMIZER_PROGRESS, handler);
+    // Return unsubscribe function
+    return () => {
+      ipcRenderer.removeListener((IPC_CHANNELS as any).OPTIMIZER_PROGRESS, handler);
     };
   },
 

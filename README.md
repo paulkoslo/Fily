@@ -124,9 +124,10 @@ Model selection is available in the Settings tab when using OpenRouter.
 Fily operates in four main stages:
 
 1. **Index**: Crawls your source directories, extracts file metadata, and stores everything in a local SQLite database
-2. **Extract**: Analyzes file content using specialized extractors for PDFs, documents, images, audio, and more
-3. **Organize**: Uses AI agents to generate summaries, tags, and virtual folder placements based on content understanding
-4. **Browse**: Presents files in an intelligent virtual folder tree while preserving your original file structure
+2. **Extract Raw Content**: Extracts raw content from files using specialized extractors for PDFs, documents, images, audio, and more
+3. **AI Processing**: Uses AI agents to generate summaries and tags in concurrent batches (utilizing 50 workers)
+4. **Organize**: Creates virtual folder placements using taxonomy generation and optimization
+5. **Browse**: Presents files in an intelligent virtual folder tree while preserving your original file structure
 
 ### Architecture
 
@@ -222,10 +223,14 @@ Files are organized into a virtual hierarchy that makes sense based on their con
 
 ## Performance
 
+- **Concurrent Batch Processing**: Worker pool with 80 concurrent workers processes batches efficiently
+- **Optimized Batch Submission**: All batches submitted immediately, processed as workers become available
+- **Efficient Batching**: Vision files (5 per batch), text files (20 per batch) for optimal API usage
+- **Lazy Image Loading**: Images loaded only when needed, minimizing memory usage
 - **Batch Operations**: Database inserts and updates batched for efficiency
-- **Parallel Processing**: Content extraction runs in parallel with worker pools
 - **Incremental Updates**: Watch mode only processes changed files
 - **Result Limiting**: Large result sets limited for fast rendering
+- **Cost-Efficient**: Can process source folders with thousands of files for just a few dollars in OpenRouter API costs
 
 ## Development
 
@@ -271,7 +276,8 @@ See [AGENTS.md](./AGENTS.md) for the full architecture vision.
 | 1 | Watch mode, incremental updates |
 | 2 | Virtual folder tree UI |
 | 3 | Content extraction pipeline |
-| 4 | AI planner integration, taxonomy generation |
+| 4 | AI planner integration, taxonomy generation, optimizer |
+| 4.5 | **Worker pool optimizations** ✅ - concurrent batch processing (50 workers), efficient API usage, cost-effective processing for thousands of files |
 
 ### Planned Improvements
 
@@ -279,15 +285,17 @@ See [AGENTS.md](./AGENTS.md) for the full architecture vision.
 |-------|----------|
 | 5 | **Production Readiness & Stability** 🔴 |
 | | - ~~User feedback for missing API key~~ ✅ (prompts to add key when using AI features) |
-| | - OpenRouter + OpenAI multi-provider support ✅ |
-| | - In-app model selection ✅ |
+| | - ~~OpenRouter + OpenAI multi-provider support~~ ✅ |
+| | - ~~In-app model selection~~ ✅ |
+| | - ~~Error recovery and graceful degradation~~ ✅ (comprehensive fallback results, Promise.allSettled for batch failures) |
+| | - ~~Worker pool optimizations~~ ✅ (concurrent batch processing, efficient API usage) |
+| | - ~~Cost-efficient processing~~ ✅ (can process thousands of files for just a few dollars) |
 | | - OpenAI API retry logic and rate limit handling |
-| | - Error recovery and graceful degradation |
 | | - React Error Boundaries for crash prevention |
 | | - Operation cancellation for long-running tasks |
 | | - Improved path validation and security |
 | | - Replace window.confirm() with proper dialog components |
-| | - Enhanced error handling throughout the application |
+| | - Enhanced error handling throughout the application (partially done - good fallback handling) |
 | 6 | **Organization System Enhancements** |
 | | - User feedback loop for improving AI organization quality |
 | | - Custom rules and placement overrides |
@@ -302,7 +310,7 @@ See [AGENTS.md](./AGENTS.md) for the full architecture vision.
 | | - Dynamic folder suggestions based on usage patterns |
 | | - Batch operations and bulk organization |
 | | - Export/import virtual organization configurations |
-| 8 | **Smart AI Search** 🎯 |
+| 8 | **Smart AI Search**  |
 | | - Semantic search using AI embeddings |
 | | - Natural language queries ("find my tax documents from 2023") |
 | | - Content-aware search (find files by meaning, not just keywords) |

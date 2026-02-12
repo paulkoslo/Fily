@@ -235,13 +235,18 @@ declare global {
   }
 
   interface ExtractionProgress {
-    status: 'extracting' | 'done' | 'error';
+    status: 'scanning' | 'extracting' | 'done' | 'error';
     filesProcessed: number;
     filesTotal: number;
     currentFile: string;
     message: string;
     step?: string;
     phase?: string;
+    totalSteps?: number;
+    currentStep?: number;
+    batchesTotal?: number;
+    batchesSent?: number;
+    batchesCompleted?: number;
   }
 
   interface ExtractContentResponse {
@@ -265,9 +270,24 @@ declare global {
     progressPercent?: number;
   }
 
+  interface OptimizerProgress {
+    status: 'optimizing' | 'done' | 'error';
+    filesTotal: number;
+    filesOptimized: number;
+    message: string;
+    step?: string;
+    progressPercent?: number;
+  }
+
   interface RunPlannerResponse {
     success: boolean;
     filesPlanned: number;
+    error?: string;
+  }
+
+  interface RunOptimizerResponse {
+    success: boolean;
+    filesOptimized: number;
     error?: string;
   }
 
@@ -419,6 +439,8 @@ declare global {
     getVirtualChildren: (request: GetVirtualChildrenRequest) => Promise<GetVirtualChildrenResponse>;
     runPlanner: (request: RunPlannerRequest) => Promise<RunPlannerResponse>;
     onPlannerProgress: (callback: (progress: PlannerProgress) => void) => () => void;
+    runOptimizer: (request: RunPlannerRequest) => Promise<RunOptimizerResponse>;
+    onOptimizerProgress: (callback: (progress: OptimizerProgress) => void) => () => void;
     getApiKeyStatus: () => Promise<GetApiKeyStatusResponse>;
     saveApiKey: (request: SaveApiKeyRequest) => Promise<SaveApiKeyResponse>;
     deleteApiKey: () => Promise<DeleteApiKeyResponse>;

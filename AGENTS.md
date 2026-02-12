@@ -39,13 +39,14 @@ AI agents (SummaryAgent, TagAgent, TaxonomyAgent) use this abstraction to extrac
 ### Pipeline Stages
 
 1. **INDEX**: Crawl source directories, extract file metadata, compute stable file_id, store in SQLite ✅
-2. **EXTRACT**: Extract content from files (PDF, DOCX, images, audio, etc.) and generate summaries/tags ✅
-3. **RETRIEVE**: Query indexed files by source, filter by search terms, prepare for planning ✅
-4. **PLAN**: Generate virtual placement decisions (virtual_path, tags, confidence, reason) ✅
+2. **EXTRACT RAW CONTENT**: Extract raw content from files (PDF, DOCX, images, audio, etc.) ✅
+3. **AI PROCESSING**: Generate summaries and tags using AI agents (SummaryTagAgent) ✅
+4. **TAXONOMY**: Generate virtual placement decisions (virtual_path, tags, confidence, reason) ✅
    - **StubPlanner**: Rule-based, extension-based categorization ✅
    - **TaxonomyPlanner**: AI-powered taxonomy generation using OpenAI ✅
-5. **BUILD VIRTUAL TREE**: Construct hierarchical tree structure from planner output ✅
-6. **UI**: Render virtual tree, handle user interactions, open original files ✅
+5. **OPTIMIZER**: Optimize low-confidence placements using AI ✅
+6. **BUILD VIRTUAL TREE**: Construct hierarchical tree structure from planner output ✅
+7. **UI**: Render virtual tree, handle user interactions, open original files ✅
 
 ## Current AI Implementation
 
@@ -115,6 +116,27 @@ The extraction pipeline (`packages/core/src/extractors/`) supports:
 - **Text files**: Direct text reading
 
 All extracted content is stored in SQLite and used by agents for summarization and tagging.
+
+### Performance Optimizations
+
+The extraction and AI processing pipeline has been optimized for large-scale file processing:
+
+**Worker Pool Architecture:**
+- **50 Concurrent Workers**: Worker pool manages concurrent batch processing
+- **Concurrent Batch Submission**: All batches submitted immediately to worker pool, processed as workers become available
+- **No Idle Time**: Workers continuously process batches from queue, maximizing throughput
+- **Race Condition Fixed**: Atomic batch submission prevents underutilization
+
+**Efficient Batching Strategy:**
+- **Vision Files**: 3 images per batch (due to large base64 image size)
+- **Text Files**: 10 files per batch (optimal token usage)
+- **Lazy Image Loading**: Images loaded only when needed (right before API calls), minimizing memory usage
+- **Batch Plans Created Upfront**: Lightweight batch planning before submission
+
+**Cost Efficiency:**
+- Can process source folders with **thousands of files** for just **a few dollars** in OpenRouter API costs
+- Efficient batching reduces API calls while maintaining quality
+- Concurrent processing minimizes total processing time
 
 ## Future: llama-fs Integration Plan
 
@@ -200,9 +222,9 @@ FileCards are built by joining `files` and `file_content` tables, providing a un
 - Shows confidence scores for AI placements
 
 **Pipeline Actions:**
-- **"Organize" button**: Full pipeline (Scan → Extract → AI Organize) in one click
+- **"Organize" button**: Full pipeline (Scan → Extract Raw → AI Process → Taxonomy → Optimize) in one click
 - **"Manual" dropdown**: Individual actions (Scan only, Extract only, Organize only)
-- Progress indicators for all operations
+- Progress indicators for all operations showing 4-step pipeline
 - Warning dialog when re-organizing existing virtual trees
 - **API key prompt**: Automatically prompts to add API key when using AI features without one configured
 
@@ -328,7 +350,10 @@ type Result<T> = { success: true; data: T } | { success: false; error: string };
 | `db/` | SQLite connection, migrations, CRUD operations |
 | `indexer/` | Crawl directories, compute file_id, manage file records |
 | `extractors/` | Content extraction from various file types (PDF, DOCX, images, audio, etc.) |
-| `agents/` | AI agents (SummaryAgent, TagAgent, TaxonomyAgent) using LLMClient |
+| `extractors/content-service.ts` | Orchestrates extraction pipeline with worker pool for concurrent processing |
+| `agents/` | AI agents (SummaryTagAgent, TaxonomyAgent) using LLMClient |
+| `agents/worker-pool.ts` | **Worker pool** for concurrent batch processing (50 workers) |
+| `agents/summary-tag-agent.ts` | **SummaryTagAgent** - generates summaries and tags in batched API calls |
 | `agents/llm-client.ts` | Unified LLM abstraction (OpenRouter, OpenAI) with model selection |
 | `agents/prompts/` | Prompt templates for AI agents |
 | `planner/` | Interface + implementations for virtual placement decisions |
@@ -418,11 +443,12 @@ class LlamaFSPlanner implements Planner {
 | File | Purpose |
 |------|---------|
 | `packages/core/src/agents/llm-client.ts` | ✅ **LLMClient** - Unified LLM abstraction (OpenRouter, OpenAI) |
-| `packages/core/src/agents/summary-agent.ts` | Content summarization agent |
-| `packages/core/src/agents/tag-agent.ts` | Intelligent tagging agent |
+| `packages/core/src/agents/worker-pool.ts` | ✅ **WorkerPool** - Concurrent batch processing (50 workers) |
+| `packages/core/src/agents/summary-tag-agent.ts` | ✅ **SummaryTagAgent** - Generates summaries and tags in batched API calls |
 | `packages/core/src/agents/taxonomy-agent.ts` | Taxonomy design agent |
 | `packages/core/src/agents/api-call-helper.ts` | Helper for executing LLM API calls with fallback |
 | `packages/core/src/agents/prompts/` | Prompt templates for all agents |
+| `packages/core/src/extractors/content-service.ts` | ✅ **ContentService** - Orchestrates extraction with concurrent batch processing |
 | `packages/core/src/planner/index.ts` | Planner interface definition |
 | `packages/core/src/planner/stub-planner.ts` | Rule-based reference implementation |
 | `packages/core/src/planner/taxonomy-planner.ts` | ✅ **Active AI planner** |
@@ -460,18 +486,24 @@ See [README.md](./README.md) for full installation instructions.
 
 ✅ **Implemented:**
 - Full content extraction pipeline (PDF, DOCX, images, audio, etc.)
-- AI-powered summarization and tagging
+- **Optimized worker pool** with concurrent batch processing (50 workers)
+- **Concurrent batch submission** - all batches submitted immediately, processed as workers become available
+- **Efficient batching** - vision files (3 per batch), text files (10 per batch)
+- **Lazy image loading** - images loaded only when needed, minimizing memory usage
+- AI-powered summarization and tagging (SummaryTagAgent)
 - Taxonomy-driven virtual organization (TaxonomyPlanner)
+- Optimizer for low-confidence placements
 - Virtual tree UI with expand/collapse and navigation
 - Watch mode for automatic file indexing
 - Search across files, content, and tags
 - File card view and full content viewer
-- Progress tracking for all operations
+- Progress tracking for all operations (4-step pipeline)
 - Warning dialogs for destructive operations
 - **Multi-provider LLM support** (OpenRouter + OpenAI)
 - **In-app API key configuration** with provider selection
 - **Model selection** (GPT-5 Nano/Mini, Grok 4.1 Fast, DeepSeek V3.2)
 - **API key prompt** when using AI features without a key configured
+- **Cost-efficient processing** - can process thousands of files for just a few dollars in API costs
 
 📋 **Planned:**
 - User feedback loop for improving AI organization

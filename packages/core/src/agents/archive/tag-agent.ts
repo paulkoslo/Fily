@@ -2,9 +2,9 @@ import {
   TAG_AGENT_SYSTEM_PROMPT,
   TAG_AGENT_USER_PROMPT,
 } from './prompts/tag-agent-prompt';
-import type { WorkerPool } from './worker-pool';
-import { executeApiCall } from './api-call-helper';
-import { createLLMClient, getProviderDisplayName, type LLMClient } from './llm-client';
+import type { WorkerPool } from '../worker-pool';
+import { executeApiCall } from '../api-call-helper';
+import { createLLMClient, getProviderDisplayName, type LLMClient } from '../llm-client';
 
 /**
  * Tag Agent

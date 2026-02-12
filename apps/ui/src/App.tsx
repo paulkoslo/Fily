@@ -10,6 +10,7 @@ import { SettingsButton } from './components/SettingsButton';
 import { MemoryInfo } from './components/MemoryInfo';
 import { ContentViewer } from './components/ContentViewer';
 import { ApiKeyModal } from './components/ApiKeyModal';
+import { ProgressBar } from './components/ProgressBar';
 import { getTheme, getThemeClassName, defaultThemeId, getAllThemeIds } from './themes';
 
 function App() {
@@ -38,6 +39,10 @@ function App() {
   const [contentViewerVariant, setContentViewerVariant] = useState<'full' | 'card'>('full');
   const [isOrganizing, setIsOrganizing] = useState(false);
   const [plannerProgress, setPlannerProgress] = useState<PlannerProgress | null>(null);
+  const [isOptimizing, setIsOptimizing] = useState(false);
+  const [optimizerProgress, setOptimizerProgress] = useState<OptimizerProgress | null>(null);
+  // Ref to track latest extraction progress for synchronous access in callbacks
+  const extractionProgressRef = useRef<ExtractionProgress | null>(null);
   const [isManualMenuOpen, setIsManualMenuOpen] = useState(false);
   const [isLayoutMenuOpen, setIsLayoutMenuOpen] = useState(false);
   const [apiKeyStatus, setApiKeyStatus] = useState<ApiKeyStatus | null>(null);
@@ -141,14 +146,28 @@ function App() {
   // Subscribe to extraction progress updates
   useEffect(() => {
     const unsubscribe = window.api.onExtractionProgress((progress) => {
-      setExtractionProgress(progress);
-      if (progress.status === 'done' || progress.status === 'error') {
-        setIsExtracting(false);
-        // Clear progress after a short delay
-        setTimeout(() => {
-          setExtractionProgress(null);
-        }, 2000);
-      }
+      // Use requestAnimationFrame to ensure UI updates are rendered
+      requestAnimationFrame(() => {
+        setExtractionProgress(progress);
+        extractionProgressRef.current = progress; // Update ref synchronously
+        if (progress.status === 'done') {
+          setIsExtracting(false);
+          // Show completion animation, then clear progress
+          setTimeout(() => {
+            setExtractionProgress((prev) => prev ? { ...prev, status: 'done' as const } : null);
+            setTimeout(() => {
+              setExtractionProgress(null);
+              extractionProgressRef.current = null;
+            }, 1000); // Fade out after animation
+          }, 500); // Show completion state briefly
+        } else if (progress.status === 'error') {
+          // On error, keep progress bar visible but mark extraction as done
+          // This allows taxonomy to proceed even if some batches failed
+          setIsExtracting(false);
+          // Don't clear progress immediately - keep it visible so user sees what happened
+          // Progress will be cleared when extraction completes (even with errors)
+        }
+      });
     });
     return unsubscribe;
   }, []);
@@ -159,15 +178,36 @@ function App() {
       setPlannerProgress(progress);
       if (progress.status === 'done' || progress.status === 'error') {
         setIsOrganizing(false);
-        // Clear planner progress banner after a short delay so it doesn't stick around forever
+        // Show completion animation, then clear progress
         setTimeout(() => {
-          setPlannerProgress((prev) => (prev === progress ? null : prev));
-        }, 2000);
+          setPlannerProgress((prev) => prev ? { ...prev, status: 'done' as const } : null);
+          setTimeout(() => {
+            setPlannerProgress(null);
+          }, 1000); // Fade out after animation
+        }, 500); // Show completion state briefly
       } else {
         setIsOrganizing(true);
       }
     });
     return unsubscribe;
+  }, []);
+
+  // Subscribe to optimizer progress updates
+  useEffect(() => {
+    const unsubscribeOptimizer = window.api.onOptimizerProgress((progress) => {
+      setOptimizerProgress(progress);
+      if (progress.status === 'done' || progress.status === 'error') {
+        setIsOptimizing(false);
+        if (progress.status === 'done') {
+          setTimeout(() => {
+            setOptimizerProgress(null);
+          }, 2000);
+        }
+      } else {
+        setIsOptimizing(true);
+      }
+    });
+    return unsubscribeOptimizer;
   }, []);
 
   // Load virtual tree
@@ -674,14 +714,14 @@ function App() {
     }
   }, [watchingSourceIds]);
 
-  const handleExtractContent = useCallback(async () => {
-    if (!selectedSourceId || isExtracting) return;
+  const handleExtractContent = useCallback(async (): Promise<boolean> => {
+    if (!selectedSourceId || isExtracting) return false;
 
     // Check if an API key is configured (needed for AI summaries and tags)
     if (!apiKeyStatus?.hasKey) {
       setApiKeyModalError(null);
       setIsApiKeyModalOpen(true);
-      return;
+      return false;
     }
 
     setIsExtracting(true);
@@ -695,11 +735,51 @@ function App() {
 
       if (!response.success) {
         setError(response.error || 'Failed to extract content');
+        setIsExtracting(false);
+        return false; // Return false to indicate failure
       }
+
+      // CRITICAL: Wait for final progress update ('done' or 'error') before returning
+      // Errors can occur asynchronously in worker pool batches after extractContent returns
+      let waited = 0;
+      const maxWait = 10000; // Wait up to 10 seconds for final status
+      const checkInterval = 100; // Check every 100ms
+      
+      while (waited < maxWait && isExtracting) {
+        // Check if we've received a final status update (use ref for synchronous access)
+        const currentProgress = extractionProgressRef.current;
+        if (currentProgress && (currentProgress.status === 'done' || currentProgress.status === 'error')) {
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve, checkInterval));
+        waited += checkInterval;
+      }
+
+      // Check final status (use ref for synchronous access)
+      const finalProgress = extractionProgressRef.current;
+      const finalStatus = finalProgress?.status;
+      
+      // CRITICAL: Even if there were errors, extraction is "done" if we got here
+      // Some batches may have failed and used fallback results, but extraction completed
+      if (finalStatus === 'error') {
+        // Log warning but don't stop - extraction completed with fallback results
+        console.warn('[App] Extraction completed with some errors, using fallback results for failed batches');
+        // Don't set error or return false - allow taxonomy to proceed
+      }
+
+      if (waited >= maxWait && isExtracting) {
+        console.warn('[App] Timeout waiting for extraction to complete, but continuing anyway');
+        // Don't set error - allow process to continue
+      }
+
+      setIsExtracting(false);
+      // Always return true - extraction is "done" (with or without AI results)
+      // Taxonomy can proceed with whatever data we have
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to extract content');
-    } finally {
       setIsExtracting(false);
+      return false; // Return false to indicate failure
     }
   }, [selectedSourceId, isExtracting, apiKeyStatus]);
 
@@ -766,6 +846,33 @@ function App() {
     }
   }, [selectedSourceId, isOrganizing, virtualTree, loadVirtualTree, apiKeyStatus]);
 
+  const handleOptimize = useCallback(async () => {
+    if (!selectedSourceId || isOptimizing) return;
+
+    // Check if an API key is configured
+    if (!apiKeyStatus?.hasKey) {
+      setApiKeyModalError(null);
+      setIsApiKeyModalOpen(true);
+      return;
+    }
+
+    setIsOptimizing(true);
+    setOptimizerProgress(null);
+    setError(null);
+
+    const response = await window.api.runOptimizer({
+      sourceId: selectedSourceId,
+    });
+
+    if (!response.success) {
+      setError(response.error || 'Failed to optimize placements');
+      setIsOptimizing(false);
+    } else {
+      // Reload virtual tree to reflect optimized placements
+      await loadVirtualTree();
+    }
+  }, [selectedSourceId, isOptimizing, loadVirtualTree, apiKeyStatus]);
+
   /**
    * Run the full AI pipeline in one click:
    * 1) Scan
@@ -786,7 +893,33 @@ function App() {
     await handleScan();
 
     // Step 2: Extract content (summaries, tags, etc.)
-    await handleExtractContent();
+    const extractionSuccess = await handleExtractContent();
+    
+    // CRITICAL: Stop if extraction failed
+    if (!extractionSuccess) {
+      console.error('[App] Extraction failed, stopping pipeline');
+      return;
+    }
+
+    // CRITICAL: Ensure extraction is truly complete before starting organization
+    // Wait for isExtracting to be false (handleExtractContent already waits for IPC completion)
+    let waitCount = 0;
+    const maxWait = 50; // Wait up to 5 seconds (50 * 100ms)
+    while (isExtracting && waitCount < maxWait) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      waitCount++;
+    }
+
+    // CRITICAL: Check for errors before proceeding
+    if (error) {
+      console.error('[App] Error detected after extraction, stopping pipeline:', error);
+      return;
+    }
+
+    if (isExtracting) {
+      console.warn('[App] Extraction still in progress after wait, stopping pipeline to prevent concurrent execution');
+      return;
+    }
 
     // Step 3: Run AI taxonomy planner to build virtual tree
     await handleOrganize();
@@ -795,6 +928,7 @@ function App() {
     isScanning,
     isExtracting,
     isOrganizing,
+    error,
     handleScan,
     handleExtractContent,
     handleOrganize,
@@ -1052,7 +1186,7 @@ function App() {
               <button
                 className="manual-button"
                 disabled={
-                  selectedSourceId === null || isScanning || isExtracting || isOrganizing
+                  selectedSourceId === null || isScanning || isExtracting || isOrganizing || isOptimizing
                 }
                 onClick={() => setIsManualMenuOpen((open) => !open)}
               >
@@ -1097,10 +1231,26 @@ function App() {
                       selectedSourceId === null ||
                       isScanning ||
                       isExtracting ||
-                      isOrganizing
+                      isOrganizing ||
+                      isOptimizing
                     }
                   >
                     Organize (AI Taxonomy) only
+                  </button>
+                  <button
+                    onClick={async () => {
+                      setIsManualMenuOpen(false);
+                      await handleOptimize();
+                    }}
+                    disabled={
+                      selectedSourceId === null ||
+                      isScanning ||
+                      isExtracting ||
+                      isOrganizing ||
+                      isOptimizing
+                    }
+                  >
+                    Optimize only
                   </button>
                 </div>
               )}
@@ -1162,91 +1312,45 @@ function App() {
         )}
 
         {/* Extraction Progress */}
-        {extractionProgress && extractionProgress.status !== 'done' && (
-          <div className="progress-banner">
+        {extractionProgress && <ProgressBar progress={extractionProgress} />}
+
+        {/* Planner Progress */}
+        {plannerProgress && (
+          <div className={`progress-banner ${plannerProgress.status === 'done' ? 'progress-complete' : ''}`}>
             <div className="progress-content">
               <div className="progress-step-indicator">
-                {extractionProgress.step || 'Step 2/3: Extracting content...'}
+                {plannerProgress.status === 'done' ? '✅ Step 3/3: Complete!' : (plannerProgress.step || 'Step 3/3: Organizing files...')}
               </div>
-              {extractionProgress.filesTotal > 0 ? (
+              {plannerProgress.status !== 'done' ? (
                 <div className="progress-details">
                   <div className="progress-bar-container">
-                    <div
-                      className="progress-bar"
-                      style={{
-                        width: `${Math.round((extractionProgress.filesProcessed / extractionProgress.filesTotal) * 100)}%`,
-                      }}
-                    />
-                  </div>
-                  <span className="progress-count">
-                    {extractionProgress.filesProcessed} / {extractionProgress.filesTotal}
-                  </span>
-                </div>
-              ) : (
-                <div className="progress-details">
-                  <div className="progress-bar-container">
-                    <div className="progress-bar-indeterminate" />
+                    <div className="progress-bar-bouncing" />
                   </div>
                 </div>
-              )}
+              ) : null}
               <div className="progress-status">
-                <span className="progress-message">{extractionProgress.message}</span>
-                {extractionProgress.currentFile && (
-                  <span className="progress-current-file" title={extractionProgress.currentFile}>
-                    {extractionProgress.currentFile}
-                  </span>
-                )}
+                <span className="progress-message">{plannerProgress.message}</span>
               </div>
             </div>
           </div>
         )}
 
-        {/* Planner Progress */}
-        {plannerProgress && plannerProgress.status !== 'done' && (
-          <div className="progress-banner">
+        {/* Optimizer Progress */}
+        {optimizerProgress && (
+          <div className={`progress-banner ${optimizerProgress.status === 'done' ? 'progress-complete' : ''}`}>
             <div className="progress-content">
               <div className="progress-step-indicator">
-                {plannerProgress.step || 'Step 3/3: Organizing files...'}
+                {optimizerProgress.status === 'done' ? '✅ Optimize: Complete!' : (optimizerProgress.step || 'Optimizing low-confidence files...')}
               </div>
-              {plannerProgress.status === 'planning' && plannerProgress.progressPercent !== undefined ? (
+              {optimizerProgress.status !== 'done' ? (
                 <div className="progress-details">
                   <div className="progress-bar-container">
-                    <div
-                      className="progress-bar"
-                      style={{
-                        width: `${plannerProgress.progressPercent}%`,
-                      }}
-                    />
-                  </div>
-                  <span className="progress-count">
-                    {plannerProgress.phase === 'planning' ? 'AI planning in progress...' : `${plannerProgress.filesPlanned} / ${plannerProgress.filesTotal}`}
-                  </span>
-                </div>
-              ) : plannerProgress.filesTotal > 0 && plannerProgress.status !== 'planning' ? (
-                <div className="progress-details">
-                  <div className="progress-bar-container">
-                    <div
-                      className="progress-bar"
-                      style={{
-                        width: `${Math.round(
-                          (plannerProgress.filesPlanned / plannerProgress.filesTotal) * 100
-                        )}%`,
-                      }}
-                    />
-                  </div>
-                  <span className="progress-count">
-                    {plannerProgress.filesPlanned} / {plannerProgress.filesTotal}
-                  </span>
-                </div>
-              ) : (
-                <div className="progress-details">
-                  <div className="progress-bar-container">
-                    <div className="progress-bar-indeterminate" />
+                    <div className="progress-bar-bouncing" />
                   </div>
                 </div>
-              )}
+              ) : null}
               <div className="progress-status">
-                <span className="progress-message">{plannerProgress.message}</span>
+                <span className="progress-message">{optimizerProgress.message}</span>
               </div>
             </div>
           </div>

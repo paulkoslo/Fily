@@ -1,6 +1,59 @@
 import * as fs from 'fs';
 import pdf from 'pdf-parse';
 import type { Extractor, ExtractionResult, ExtractedContent } from './types';
+import { truncateToWordLimit, withTimeout } from './extractor-utils';
+
+// Global suppression of pdf-parse font warnings (set up once at module load)
+let fontWarningSuppressionActive = false;
+
+function setupFontWarningSuppression() {
+  if (fontWarningSuppressionActive) return;
+  fontWarningSuppressionActive = true;
+  
+  const originalStderrWrite = process.stderr.write.bind(process.stderr);
+  const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+  
+  const filterFontWarnings = (msg: string): boolean => {
+    const lowerMsg = msg.toLowerCase();
+    return !(
+      lowerMsg.includes('tt: undefined function') ||
+      lowerMsg.includes('warning: tt:') ||
+      lowerMsg.includes('could not find a preferred cmap table') ||
+      lowerMsg.includes('required "glyf" table is not found') ||
+      (lowerMsg.includes('glyf') && lowerMsg.includes('table')) ||
+      (lowerMsg.includes('cmap') && lowerMsg.includes('table'))
+    );
+  };
+  
+  process.stderr.write = function(chunk: any, encoding?: any, callback?: any): boolean {
+    if (chunk) {
+      const msg = chunk.toString();
+      if (filterFontWarnings(msg)) {
+        return originalStderrWrite(chunk, encoding, callback);
+      }
+      // Swallow font warnings
+      if (typeof callback === 'function') callback();
+      return true;
+    }
+    return originalStderrWrite(chunk, encoding, callback);
+  };
+  
+  process.stdout.write = function(chunk: any, encoding?: any, callback?: any): boolean {
+    if (chunk) {
+      const msg = chunk.toString();
+      if (filterFontWarnings(msg)) {
+        return originalStdoutWrite(chunk, encoding, callback);
+      }
+      // Swallow font warnings
+      if (typeof callback === 'function') callback();
+      return true;
+    }
+    return originalStdoutWrite(chunk, encoding, callback);
+  };
+}
+
+// Set up suppression immediately when module loads
+setupFontWarningSuppression();
 
 /**
  * PDF Extractor - extracts text from PDF files
@@ -30,29 +83,29 @@ export class PDFExtractor implements Extractor {
         };
       }
 
-      const dataBuffer = await fs.promises.readFile(filePath);
-      // Suppress pdf-parse font warnings (they're harmless)
-      const originalConsoleWarn = console.warn;
-      console.warn = (...args: any[]) => {
-        const msg = args[0]?.toString() || '';
-        // Filter out pdf-parse font warnings
-        if (!msg.includes('TT: undefined function')) {
-          originalConsoleWarn.apply(console, args);
-        }
-      };
+      const dataBuffer = await withTimeout(
+        fs.promises.readFile(filePath),
+        60000, // 60 second timeout
+        10000, // 10 second warning
+        filePath
+      );
       
-      let pdfData;
-      try {
-        pdfData = await pdf(dataBuffer);
-      } finally {
-        // Restore console.warn
-        console.warn = originalConsoleWarn;
-      }
+      // Font warning suppression is already set up at module load time
+      // Just parse the PDF - warnings will be automatically filtered
+      const pdfData = await withTimeout(
+        pdf(dataBuffer),
+        60000, // 60 second timeout
+        10000, // 10 second warning
+        filePath
+      );
       
-      const extractedText = pdfData.text || '';
+      const rawText = pdfData.text || '';
+      
+      // Truncate to 1000 words max for scalability
+      const extractedText = truncateToWordLimit(rawText);
 
       // Heuristic: if pdf-parse returns no text at all, treat this as an image-based (scanned) PDF
-      const hasText = extractedText.trim().length > 0;
+      const hasText = rawText.trim().length > 0; // Check original text, not truncated
 
       let extractedContent: ExtractedContent;
 
@@ -102,6 +155,8 @@ export class PDFExtractor implements Extractor {
             creationDate: pdfData.info?.CreationDate || null,
             modDate: pdfData.info?.ModDate || null,
             isImageBased: false,
+            originalWordCount: rawText.split(/\s+/).filter(w => w.length > 0).length,
+            truncated: rawText.length !== extractedText.length,
           },
         };
       }

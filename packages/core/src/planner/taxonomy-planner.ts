@@ -1,7 +1,7 @@
 import type { Planner } from './index';
 import type { FileRecord, PlannerOutput, FileCard } from '../ipc/contracts';
 import type { DatabaseManager } from '../db';
-import { TaxonomyAgent } from '../agents';
+import { TaxonomyAgent, OptimizerAgent, type WorkerPool } from '../agents';
 import { buildTaxonomyOverview } from './taxonomy-overview';
 import type { TaxonomyPlan, PlacementRule, VirtualFolderSpec } from './taxonomy-types';
 
@@ -11,10 +11,19 @@ export class TaxonomyPlanner implements Planner {
 
   private db: DatabaseManager;
   private agent: TaxonomyAgent;
+  private optimizer: OptimizerAgent | null;
+  private onProgress?: (message: string) => void;
 
-  constructor(db: DatabaseManager, agent?: TaxonomyAgent) {
+  constructor(
+    db: DatabaseManager,
+    agent?: TaxonomyAgent,
+    workerPool?: WorkerPool,
+    onProgress?: (message: string) => void
+  ) {
     this.db = db;
     this.agent = agent ?? new TaxonomyAgent();
+    this.optimizer = workerPool ? new OptimizerAgent(workerPool) : null;
+    this.onProgress = onProgress;
   }
 
   async plan(files: FileRecord[]): Promise<PlannerOutput[]> {
@@ -31,8 +40,8 @@ export class TaxonomyPlanner implements Planner {
 
     // 2) Build aggregate overview for the agent
     const overview = buildTaxonomyOverview(sourceId, fileCards, {
-      maxTags: 30,
-      samplesPerTag: 5,
+      maxTags: 50, // Increased to support larger datasets
+      samplesPerTag: 20, // Increased to provide more context per tag
     });
 
     // 3) Ask TaxonomyAgent for a plan
@@ -43,8 +52,204 @@ export class TaxonomyPlanner implements Planner {
 
     // 5) Apply the plan deterministically to produce PlannerOutput[]
     const outputs = this.applyPlanToFiles(plan, fileCards);
-    
+
+    // 6) Optimize low-confidence files (< 70%) if optimizer is available
+    if (this.optimizer) {
+      const lowConfidenceThreshold = 0.7;
+      const lowConfidenceFiles: { card: FileCard; currentPlacement: PlannerOutput }[] = [];
+
+      // Create a map of file_id to FileCard for quick lookup
+      const cardMap = new Map<string, FileCard>();
+      for (const card of fileCards) {
+        cardMap.set(card.file_id, card);
+      }
+
+      // Find files with low confidence
+      for (const output of outputs) {
+        if (output.confidence < lowConfidenceThreshold) {
+          const card = cardMap.get(output.file_id);
+          if (card) {
+            lowConfidenceFiles.push({
+              card,
+              currentPlacement: output,
+            });
+          }
+        }
+      }
+
+      if (lowConfidenceFiles.length > 0) {
+        this.onProgress?.(
+          `Optimizing ${lowConfidenceFiles.length} files with low confidence scores...`
+        );
+
+        const optimizedResults = await this.optimizer.optimizePlacements(
+          plan,
+          lowConfidenceFiles,
+          this.onProgress
+        );
+
+        // Create a map of optimized results by fileId
+        const optimizedMap = new Map<string, PlannerOutput>();
+        for (const optResult of optimizedResults) {
+          const card = cardMap.get(optResult.fileId);
+          if (card) {
+            optimizedMap.set(optResult.fileId, {
+              file_id: optResult.fileId,
+              virtual_path: optResult.virtualPath,
+              tags: card.tags ?? [],
+              confidence: optResult.confidence,
+              reason: optResult.reason,
+            });
+          }
+        }
+
+        // Merge optimized results back into outputs
+        for (let i = 0; i < outputs.length; i++) {
+          const optimized = optimizedMap.get(outputs[i].file_id);
+          if (optimized) {
+            outputs[i] = optimized;
+          }
+        }
+
+        const optimizedCount = optimizedMap.size;
+        console.log(
+          `[TaxonomyPlanner] Optimized ${optimizedCount} low-confidence file placements`
+        );
+      }
+    }
+
     return outputs;
+  }
+
+  /**
+   * Optimize existing virtual placements for low-confidence files only.
+   * This method reads existing placements from the database and optimizes files with confidence < 0.7.
+   */
+  async optimizeExistingPlacements(sourceId: number): Promise<PlannerOutput[]> {
+    if (!this.optimizer) {
+      throw new Error('Optimizer not available - WorkerPool required');
+    }
+
+    // 1) Get existing virtual placements from database
+    const dbPlacements = await this.db.getVirtualPlacements(sourceId);
+    // Filter to only placements for files in this source
+    const files = await this.db.getFilesBySource(sourceId, undefined, undefined, -1);
+    const fileIds = new Set(files.map(f => f.file_id));
+    const existingPlacements = dbPlacements.filter(p => fileIds.has(p.file_id));
+    if (existingPlacements.length === 0) {
+      this.onProgress?.('No existing virtual placements found. Run "Organize (AI Taxonomy)" first.');
+      return [];
+    }
+
+    // 2) Get file cards for these placements
+    const fileCards = await this.db.getFileCardsBySource(sourceId);
+    const cardMap = new Map<string, FileCard>();
+    for (const card of fileCards) {
+      cardMap.set(card.file_id, card);
+    }
+
+    // 3) Find low-confidence files (< 70%)
+    const lowConfidenceThreshold = 0.7;
+    const lowConfidenceFiles: { card: FileCard; currentPlacement: PlannerOutput }[] = [];
+
+    for (const placement of existingPlacements) {
+      if (placement.confidence < lowConfidenceThreshold) {
+        const card = cardMap.get(placement.file_id);
+        if (card) {
+          lowConfidenceFiles.push({
+            card,
+            currentPlacement: {
+              file_id: placement.file_id,
+              virtual_path: placement.virtual_path,
+              tags: JSON.parse(placement.tags || '[]'),
+              confidence: placement.confidence,
+              reason: placement.reason,
+            },
+          });
+        }
+      }
+    }
+
+    if (lowConfidenceFiles.length === 0) {
+      this.onProgress?.('No low-confidence files found to optimize.');
+      return [];
+    }
+
+    // 4) Reconstruct the taxonomy plan from existing placements
+    // We need to infer the taxonomy structure from existing folder paths
+    const folderPaths = new Set<string>();
+    for (const placement of existingPlacements) {
+      const pathParts = placement.virtual_path.split('/').filter(Boolean);
+      if (pathParts.length > 1) {
+        // Get folder path (everything except the filename)
+        const folderPath = '/' + pathParts.slice(0, -1).join('/');
+        folderPaths.add(folderPath);
+      }
+    }
+
+    // Build a simplified taxonomy plan from existing structure
+    const folders = Array.from(folderPaths).map((path, index) => ({
+      id: `folder-${index}`,
+      path,
+      description: `Folder from existing taxonomy`,
+    }));
+
+    // Create a catch-all rule for each folder
+    const rules = folders.map((folder, index) => ({
+      id: `rule-${index}`,
+      targetFolderId: folder.id,
+      priority: 50,
+      reasonTemplate: `Placed in ${folder.path}`,
+    }));
+
+    const plan: TaxonomyPlan = { folders, rules };
+
+    // 5) Run optimizer
+    this.onProgress?.(`Found ${lowConfidenceFiles.length} low-confidence files to optimize...`);
+
+    const optimizedResults = await this.optimizer.optimizePlacements(
+      plan,
+      lowConfidenceFiles,
+      this.onProgress
+    );
+
+    // 6) Build updated PlannerOutput[] with optimized results
+    const optimizedMap = new Map<string, PlannerOutput>();
+    for (const optResult of optimizedResults) {
+      const card = cardMap.get(optResult.fileId);
+      if (card) {
+        optimizedMap.set(optResult.fileId, {
+          file_id: optResult.fileId,
+          virtual_path: optResult.virtualPath,
+          tags: card.tags ?? [],
+          confidence: optResult.confidence,
+          reason: optResult.reason,
+        });
+      }
+    }
+
+    // 7) Return all placements (optimized + unchanged) as PlannerOutput[]
+    const finalPlacements: PlannerOutput[] = [];
+    for (const placement of existingPlacements) {
+      const optimized = optimizedMap.get(placement.file_id);
+      if (optimized) {
+        finalPlacements.push(optimized);
+      } else {
+        // Keep existing placement if not optimized
+        finalPlacements.push({
+          file_id: placement.file_id,
+          virtual_path: placement.virtual_path,
+          tags: JSON.parse(placement.tags || '[]'),
+          confidence: placement.confidence,
+          reason: placement.reason,
+        });
+      }
+    }
+
+    const optimizedCount = optimizedMap.size;
+    console.log(`[TaxonomyPlanner] Optimized ${optimizedCount} low-confidence file placements`);
+
+    return finalPlacements;
   }
 
   // ---------------------------------------------------------------------------

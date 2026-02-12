@@ -204,6 +204,24 @@ export function VirtualTreeView({
     onPathChange(newPath);
   }, [currentVirtualPath, onPathChange]);
 
+  const handleContainerClick = useCallback((e: React.MouseEvent) => {
+    // Clear selection when clicking anywhere in the container (not on a file/folder)
+    // Check if the click target is the container or file-list itself
+    const target = e.target as HTMLElement;
+    if ((target === e.currentTarget || target.classList.contains('file-list')) && onFileSelect) {
+      onFileSelect(null);
+    }
+  }, [onFileSelect]);
+
+  const handleFileClick = useCallback((file: FileRecord, e: React.MouseEvent) => {
+    // Select file on single click
+    e.stopPropagation(); // Prevent container click from clearing selection
+    if (onFileSelect) {
+      onFileSelect(file.file_id);
+    }
+    // Don't prevent default - allow double-click to still work
+  }, [onFileSelect]);
+
   const renderBreadcrumb = () => {
     if (currentVirtualPath === '/') return null;
     return (
@@ -366,24 +384,6 @@ export function VirtualTreeView({
 
   // Check if we're loading children for the current path
   const isLoadingCurrentPath = loadingChildren.has(currentVirtualPath);
-
-  const handleContainerClick = useCallback((e: React.MouseEvent) => {
-    // Clear selection when clicking anywhere in the container (not on a file/folder)
-    // Check if the click target is the container or file-list itself
-    const target = e.target as HTMLElement;
-    if ((target === e.currentTarget || target.classList.contains('file-list')) && onFileSelect) {
-      onFileSelect(null);
-    }
-  }, [onFileSelect]);
-
-  const handleFileClick = useCallback((file: FileRecord, e: React.MouseEvent) => {
-    // Select file on single click
-    e.stopPropagation(); // Prevent container click from clearing selection
-    if (onFileSelect) {
-      onFileSelect(file.file_id);
-    }
-    // Don't prevent default - allow double-click to still work
-  }, [onFileSelect]);
 
   return (
     <div className="file-list-container" onClick={handleContainerClick}>

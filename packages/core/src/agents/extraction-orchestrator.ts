@@ -1,33 +1,39 @@
 import type { ExtractedContent } from '../extractors/types';
-import { SummaryAgent } from './summary-agent';
-import { TagAgent } from './tag-agent';
+import { SummaryTagAgent, type FileProcessingInput, type FileProcessingResult } from './summary-tag-agent';
 import type { WorkerPool } from './worker-pool';
+
+// Re-export types for convenience
+export type { FileProcessingInput, FileProcessingResult };
 
 /**
  * Extraction Orchestrator
  * 
  * This is the "grand script" that chains together:
  * 1. Extractors (extract raw content)
- * 2. Summary Agent (generates summaries for all file types)
- * 3. Tag Agent (generates tags based on summary, location, metadata)
- * 4. Future agents can use summary/tag data (organization, etc.)
+ * 2. SummaryTagAgent (generates both summaries AND tags in batched API calls)
+ * 3. Future agents can use summary/tag data (organization, etc.)
  * 
- * The orchestrator coordinates the entire pipeline.
+ * The orchestrator coordinates the entire pipeline and provides a clean interface
+ * for processing individual files or batches.
+ * 
+ * Uses SummaryTagAgent internally for efficient batched processing.
  */
 export class ExtractionOrchestrator {
-  private summaryAgent: SummaryAgent;
-  private tagAgent: TagAgent;
+  private summaryTagAgent: SummaryTagAgent;
 
-  constructor(workerPool?: WorkerPool) {
-    this.summaryAgent = new SummaryAgent(workerPool);
-    this.tagAgent = new TagAgent(workerPool);
+  constructor(
+    workerPool?: WorkerPool, 
+    onProgress?: (message: string) => void,
+    onBatchComplete?: (batchNumber: number, totalBatches: number, results: FileProcessingResult[]) => Promise<void>
+  ) {
+    this.summaryTagAgent = new SummaryTagAgent(workerPool, onProgress, onBatchComplete);
   }
 
   /**
-   * Process extracted content through the Summary Agent
-   * to generate a summary/classification
+   * Process extracted content through SummaryTagAgent to generate summary
    * 
-   * This summary will be used by other agents (organization, tagging, etc.)
+   * This is a convenience method that wraps SummaryTagAgent for backward compatibility.
+   * For better efficiency, use processBatch() or processSingle() directly.
    */
   async generateSummary(
     extractedContent: ExtractedContent,
@@ -46,92 +52,62 @@ export class ExtractionOrchestrator {
       imageMimeType?: string;
       // For audio/video and text
       extension?: string;
+      fileName?: string;
+      filePath?: string;
     }
   ): Promise<string> {
     try {
-      switch (extractedContent.contentType) {
-        case 'text':
-          return await this.summaryAgent.summarizeText(
-            metadata?.extension || 'txt',
-            extractedContent.extractedText || ''
-          );
+      const fileId = metadata?.filePath ? `temp_${Date.now()}` : `temp_${Date.now()}`;
+      const filePath = metadata?.filePath || '';
+      const fileName = metadata?.fileName || `file.${metadata?.extension || 'txt'}`;
+      const extension = metadata?.extension || 'txt';
 
-        case 'pdf': {
-          const text = extractedContent.extractedText || '';
-          const isImageBased = extractedContent.metadata?.isImageBased && text.trim().length === 0;
-
-          if (isImageBased) {
-            // Scanned/image-only PDF: we have no readable text, but we do have
-            // metadata + (optionally) file name/path via metadata. Use a special
-            // summarizer that guesses document type from this context.
-            return await this.summaryAgent.summarizeScannedPDF({
-              title: metadata?.pdfTitle ?? extractedContent.metadata?.title ?? null,
-              author: metadata?.pdfAuthor ?? extractedContent.metadata?.author ?? null,
-              subject: metadata?.pdfSubject ?? extractedContent.metadata?.subject ?? null,
-              pages: metadata?.pdfPages ?? extractedContent.metadata?.pages ?? null,
-              creator: extractedContent.metadata?.creator ?? null,
-              producer: extractedContent.metadata?.producer ?? null,
-              creationDate: extractedContent.metadata?.creationDate ?? null,
-              modDate: extractedContent.metadata?.modDate ?? null,
-              // Optional extras if the caller provided them
-              fileName: (metadata as any)?.fileName ?? null,
-              filePath: (metadata as any)?.filePath ?? null,
-            });
-          }
-
-          // Normal text-based PDF summarization
-          return await this.summaryAgent.summarizePDF(
-            text,
-            {
-              title: metadata?.pdfTitle,
-              author: metadata?.pdfAuthor,
-              subject: metadata?.pdfSubject,
-            }
-          );
-        }
-
-        case 'document':
-          // Handle DOCX, XLSX, PPTX files - treat similar to PDFs
-          const docExtension = metadata?.extension || 'docx';
-          if (['docx', 'xlsx', 'xls', 'pptx'].includes(docExtension.toLowerCase())) {
-            return await this.summaryAgent.summarizePDF(
-              extractedContent.extractedText || '',
-              {
-                title: metadata?.title,
-                author: metadata?.author,
-                subject: metadata?.subject,
-              }
-            );
-          }
-          // Fallback for other document types
-          return await this.summaryAgent.summarizeText(
-            docExtension,
-            extractedContent.extractedText || ''
-          );
-
-        case 'image':
-          // For images, pass the buffer directly to Summary Agent (GPT-5-nano handles images natively)
-          if (metadata?.imageBuffer && metadata?.imageMimeType) {
-            const imageBuffer = Buffer.from(metadata.imageBuffer);
-            return await this.summaryAgent.summarizeImage(
-              imageBuffer,
-              metadata.imageMimeType,
-              metadata?.extension || 'jpg'
-            );
-          }
-          // Fallback if no buffer available
-          return `Image file (${metadata?.extension?.toUpperCase() || 'IMAGE'})`;
-
-        case 'audio':
-        case 'video':
-          return await this.summaryAgent.summarizeAudio(
-            extractedContent.extractedText || '',
-            metadata?.extension || 'mp3'
-          );
-
-        default:
-          return `File (${extractedContent.contentType})`;
+      // Map content type
+      let contentType: 'text' | 'pdf' | 'document' | 'image' | 'audio' | 'video' = 'text';
+      if (extractedContent.contentType === 'pdf') {
+        contentType = 'pdf';
+      } else if (extractedContent.contentType === 'document') {
+        contentType = 'document';
+      } else if (extractedContent.contentType === 'image') {
+        contentType = 'image';
+      } else if (extractedContent.contentType === 'audio') {
+        contentType = 'audio';
+      } else if (extractedContent.contentType === 'video') {
+        contentType = 'video';
       }
+
+      // Prepare metadata
+      const combinedMetadata: Record<string, any> = {
+        extension,
+        fileName,
+        filePath,
+        ...extractedContent.metadata,
+      };
+
+      if (metadata) {
+        if (metadata.pdfTitle) combinedMetadata.pdfTitle = metadata.pdfTitle;
+        if (metadata.pdfAuthor) combinedMetadata.pdfAuthor = metadata.pdfAuthor;
+        if (metadata.pdfSubject) combinedMetadata.pdfSubject = metadata.pdfSubject;
+        if (metadata.pdfPages) combinedMetadata.pdfPages = metadata.pdfPages;
+        if (metadata.title) combinedMetadata.title = metadata.title;
+        if (metadata.author) combinedMetadata.author = metadata.author;
+        if (metadata.subject) combinedMetadata.subject = metadata.subject;
+      }
+
+      const input: FileProcessingInput = {
+        fileId,
+        filePath,
+        fileName,
+        extension,
+        contentType,
+        extractedText: extractedContent.extractedText || undefined,
+        metadata: combinedMetadata,
+        imageBuffer: metadata?.imageBuffer,
+        imageMimeType: metadata?.imageMimeType,
+      };
+
+      const result = await this.summaryTagAgent.processSingle(input);
+      return result.summary;
     } catch (error) {
       // Return fallback based on content type
       return this.generateFallbackSummary(extractedContent, metadata);
@@ -161,19 +137,18 @@ export class ExtractionOrchestrator {
   }
 
   /**
-   * Generate both summary and tags for a file
+   * Generate tags for a file (backward compatibility method)
    * 
-   * @param filePath - Full path to the file
-   * @param fileName - Name of the file
-   * @param extractedContent - Extracted content from extractors
-   * @param summary - Summary generated by Summary Agent
-   * @param metadata - Additional metadata
+   * NOTE: This method still calls SummaryTagAgent which generates BOTH summary and tags.
+   * The summary parameter is ignored - SummaryTagAgent generates its own summary.
+   * 
+   * For better efficiency, use processBatch() or processSingle() directly.
    */
   async generateTags(
     filePath: string,
     fileName: string,
     extractedContent: ExtractedContent,
-    summary: string,
+    summary: string, // Ignored - SummaryTagAgent generates its own summary
     metadata?: {
       // For PDFs
       pdfTitle?: string;
@@ -193,29 +168,254 @@ export class ExtractionOrchestrator {
       [key: string]: any;
     }
   ): Promise<string[]> {
-    // Combine all metadata for Tag Agent
-    const tagMetadata: Record<string, any> = {
-      contentType: extractedContent.contentType,
-      extension: metadata?.extension,
+    try {
+      const fileId = `temp_${Date.now()}`;
+      const extension = metadata?.extension || fileName.split('.').pop() || 'txt';
+
+      // Map content type
+      let contentType: 'text' | 'pdf' | 'document' | 'image' | 'audio' | 'video' = 'text';
+      if (extractedContent.contentType === 'pdf') {
+        contentType = 'pdf';
+      } else if (extractedContent.contentType === 'document') {
+        contentType = 'document';
+      } else if (extractedContent.contentType === 'image') {
+        contentType = 'image';
+      } else if (extractedContent.contentType === 'audio') {
+        contentType = 'audio';
+      } else if (extractedContent.contentType === 'video') {
+        contentType = 'video';
+      }
+
+      // Combine all metadata
+      const combinedMetadata: Record<string, any> = {
+        contentType: extractedContent.contentType,
+        extension,
+        ...extractedContent.metadata,
+      };
+
+      if (metadata) {
+        if (metadata.pdfTitle) combinedMetadata.pdfTitle = metadata.pdfTitle;
+        if (metadata.pdfAuthor) combinedMetadata.pdfAuthor = metadata.pdfAuthor;
+        if (metadata.pdfSubject) combinedMetadata.pdfSubject = metadata.pdfSubject;
+        if (metadata.pdfPages) combinedMetadata.pages = metadata.pdfPages;
+        if (metadata.title) combinedMetadata.title = metadata.title;
+        if (metadata.author) combinedMetadata.author = metadata.author;
+        if (metadata.subject) combinedMetadata.subject = metadata.subject;
+      }
+
+      const input: FileProcessingInput = {
+        fileId,
+        filePath,
+        fileName,
+        extension,
+        contentType,
+        extractedText: extractedContent.extractedText || undefined,
+        metadata: combinedMetadata,
+        imageBuffer: metadata?.imageBuffer,
+        imageMimeType: metadata?.imageMimeType,
+      };
+
+      const result = await this.summaryTagAgent.processSingle(input);
+      return result.tags;
+    } catch (error) {
+      // Return fallback tags
+      return this.generateFallbackTags(filePath, fileName, metadata?.extension || '');
+    }
+  }
+
+  /**
+   * Generate both summary AND tags for a file (recommended method)
+   * Uses SummaryTagAgent internally for efficient processing.
+   */
+  async generateSummaryAndTags(
+    filePath: string,
+    fileName: string,
+    extractedContent: ExtractedContent,
+    metadata?: {
+      // For PDFs
+      pdfTitle?: string;
+      pdfAuthor?: string;
+      pdfSubject?: string;
+      pdfPages?: number;
+      // For documents (DOCX, XLSX, PPTX)
+      title?: string;
+      author?: string;
+      subject?: string;
+      // For images
+      imageBuffer?: Buffer;
+      imageMimeType?: string;
+      // For audio/video and text
+      extension?: string;
+      // Additional metadata from extractors
+      [key: string]: any;
+    }
+  ): Promise<{ summary: string; tags: string[] }> {
+    const fileId = `temp_${Date.now()}`;
+    const extension = metadata?.extension || fileName.split('.').pop() || 'txt';
+
+    // Map content type
+    let contentType: 'text' | 'pdf' | 'document' | 'image' | 'audio' | 'video' = 'text';
+    if (extractedContent.contentType === 'pdf') {
+      contentType = 'pdf';
+    } else if (extractedContent.contentType === 'document') {
+      contentType = 'document';
+    } else if (extractedContent.contentType === 'image') {
+      contentType = 'image';
+    } else if (extractedContent.contentType === 'audio') {
+      contentType = 'audio';
+    } else if (extractedContent.contentType === 'video') {
+      contentType = 'video';
+    }
+
+    // Prepare metadata
+    const combinedMetadata: Record<string, any> = {
+      extension,
+      fileName,
+      filePath,
       ...extractedContent.metadata,
     };
 
     if (metadata) {
-      if (metadata.pdfTitle) tagMetadata.title = metadata.pdfTitle;
-      if (metadata.pdfAuthor) tagMetadata.author = metadata.pdfAuthor;
-      if (metadata.pdfSubject) tagMetadata.subject = metadata.pdfSubject;
-      if (metadata.pdfPages) tagMetadata.pages = metadata.pdfPages;
-      if (metadata.title) tagMetadata.title = metadata.title;
-      if (metadata.author) tagMetadata.author = metadata.author;
-      if (metadata.subject) tagMetadata.subject = metadata.subject;
+      if (metadata.pdfTitle) combinedMetadata.pdfTitle = metadata.pdfTitle;
+      if (metadata.pdfAuthor) combinedMetadata.pdfAuthor = metadata.pdfAuthor;
+      if (metadata.pdfSubject) combinedMetadata.pdfSubject = metadata.pdfSubject;
+      if (metadata.pdfPages) combinedMetadata.pdfPages = metadata.pdfPages;
+      if (metadata.title) combinedMetadata.title = metadata.title;
+      if (metadata.author) combinedMetadata.author = metadata.author;
+      if (metadata.subject) combinedMetadata.subject = metadata.subject;
     }
 
-    return await this.tagAgent.generateTags(
+    const input: FileProcessingInput = {
+      fileId,
       filePath,
       fileName,
-      metadata?.extension || '',
-      summary,
-      tagMetadata
+      extension,
+      contentType,
+      extractedText: extractedContent.extractedText || undefined,
+      metadata: combinedMetadata,
+      imageBuffer: metadata?.imageBuffer,
+      imageMimeType: metadata?.imageMimeType,
+    };
+
+    return await this.summaryTagAgent.processSingle(input);
+  }
+
+  /**
+   * Process a batch of files efficiently (recommended for multiple files)
+   * Uses SummaryTagAgent's intelligent batching internally.
+   */
+  async processBatch(
+    files: Array<{
+      fileId: string;
+      filePath: string;
+      fileName: string;
+      extension: string;
+      extractedContent: ExtractedContent;
+      metadata?: Record<string, any>;
+      imagePath?: string; // Path for lazy image loading
+    }>
+  ): Promise<FileProcessingResult[]> {
+    // LAZY LOADING: Load image buffers only when needed (right before API call)
+    const inputs: FileProcessingInput[] = await Promise.all(
+      files.map(async ({ fileId, filePath, fileName, extension, extractedContent, metadata, imagePath }) => {
+        // Map content type
+        let contentType: 'text' | 'pdf' | 'document' | 'image' | 'audio' | 'video' = 'text';
+        if (extractedContent.contentType === 'pdf') {
+          contentType = 'pdf';
+        } else if (extractedContent.contentType === 'document') {
+          contentType = 'document';
+        } else if (extractedContent.contentType === 'image') {
+          contentType = 'image';
+        } else if (extractedContent.contentType === 'audio') {
+          contentType = 'audio';
+        } else if (extractedContent.contentType === 'video') {
+          contentType = 'video';
+        }
+
+        // LAZY LOAD: Only load image buffer now (right before API call)
+        let imageBuffer: Buffer | undefined;
+        if (contentType === 'image' && imagePath) {
+          try {
+            const fs = await import('fs/promises');
+            imageBuffer = await fs.readFile(imagePath);
+          } catch (error) {
+            console.warn(`[ExtractionOrchestrator] Failed to load image ${imagePath}:`, error);
+          }
+        } else if (metadata?.imageBuffer) {
+          // Fallback: use existing buffer if provided
+          imageBuffer = metadata.imageBuffer;
+        }
+
+        return {
+          fileId,
+          filePath,
+          fileName,
+          extension,
+          contentType,
+          extractedText: extractedContent.extractedText || undefined,
+          metadata: {
+            extension,
+            fileName,
+            filePath,
+            ...extractedContent.metadata,
+            ...metadata,
+            // Remove imageBuffer from metadata to avoid keeping it in memory
+            imageBuffer: undefined,
+          },
+          imageBuffer, // Only loaded when needed
+          imageMimeType: metadata?.imageMimeType,
+        };
+      })
     );
+
+    const results = await this.summaryTagAgent.processBatch(inputs);
+    
+    // CRITICAL: Clear image buffers from results to free memory immediately
+    // The buffers are no longer needed after API call
+    for (const input of inputs) {
+      if (input.imageBuffer) {
+        // Clear reference to allow GC
+        (input as any).imageBuffer = undefined;
+      }
+    }
+    
+    return results;
+  }
+
+  private generateFallbackTags(filePath: string, fileName: string, extension: string): string[] {
+    const tags: string[] = [];
+    
+    // Extension
+    if (extension) {
+      tags.push(extension.toLowerCase());
+    }
+
+    // Path segments
+    const pathParts = filePath.split(/[\\/]/).filter(p => p.length > 0);
+    for (const part of pathParts.slice(-6)) { // Last 6 path segments
+      const cleaned = part
+        .toLowerCase()
+        .replace(/\.[^/.]+$/, '')
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+      if (cleaned.length > 1 && cleaned.length < 40) {
+        tags.push(cleaned);
+      }
+    }
+
+    // File name parts
+    const nameWithoutExt = fileName.replace(/\.[^/.]+$/, '');
+    const nameParts = nameWithoutExt
+      .split(/[-_\s]+/)
+      .map(part => part.toLowerCase().trim())
+      .filter(part => part.length > 1 && part.length < 40);
+    for (const part of nameParts) {
+      const cleaned = part.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+      if (cleaned.length > 1) {
+        tags.push(cleaned);
+      }
+    }
+
+    return tags.slice(0, 15); // Return up to 15 tags
   }
 }

@@ -86,16 +86,6 @@ export function FileBrowser({
     }
   }, [selectedFileId, isLoading, files.length]);
 
-  if (isLoading) {
-    return (
-      <div className="file-list-container">
-        <div className="file-list-loading">Loading...</div>
-      </div>
-    );
-  }
-
-  const isEmpty = folders.length === 0 && files.length === 0;
-
   const handleContainerClick = useCallback((e: React.MouseEvent) => {
     // Clear selection when clicking anywhere in the container (not on a file/folder)
     // Check if the click target is the container or file-list itself
@@ -122,6 +112,16 @@ export function FileBrowser({
     }
     onFolderClick(folder);
   }, [onFileSelect, onFolderClick]);
+
+  if (isLoading) {
+    return (
+      <div className="file-list-container">
+        <div className="file-list-loading">Loading...</div>
+      </div>
+    );
+  }
+
+  const isEmpty = folders.length === 0 && files.length === 0;
 
   return (
     <div className="file-list-container" onClick={handleContainerClick}>

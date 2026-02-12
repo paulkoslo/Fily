@@ -2,7 +2,9 @@
  * Worker Pool for managing concurrent AI API calls
  * 
  * Limits concurrent AI operations (OpenAI API calls) to a maximum of 50 workers.
- * Each AI agent call (Summary Agent, Audio transcription, etc.) counts as 1 worker.
+ * Each AI agent call (SummaryTagAgent batch, Audio transcription, etc.) counts as 1 worker.
+ * 
+ * Logging is minimal - only errors and important state changes are logged.
  */
 
 export class WorkerPool {
@@ -11,7 +13,7 @@ export class WorkerPool {
   private queue: Array<() => Promise<any>> = [];
   private running: boolean = true;
 
-  constructor(maxWorkers: number = 50) {
+  constructor(maxWorkers: number = 80) {
     this.maxWorkers = maxWorkers;
   }
 
@@ -22,30 +24,36 @@ export class WorkerPool {
   async execute<T>(task: () => Promise<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const wrappedTask = async () => {
-        const workerId = ++this.activeWorkers;
+        const workerId = this.activeWorkers; // Track worker ID (already incremented)
         const startTime = Date.now();
         try {
           const result = await task();
           const duration = Date.now() - startTime;
-          console.log(`[WorkerPool] Worker ${workerId} completed in ${duration}ms (${this.activeWorkers - 1} active, ${this.queue.length} queued)`);
+          // Log slow workers (>30 seconds)
+          if (duration > 30000) {
+            console.warn(`[WorkerPool] Worker ${workerId} completed slowly after ${duration}ms`);
+          }
           resolve(result);
         } catch (error) {
           const duration = Date.now() - startTime;
-          console.log(`[WorkerPool] Worker ${workerId} failed after ${duration}ms`);
+          console.error(`[WorkerPool] Worker ${workerId} failed after ${duration}ms:`, error);
           reject(error);
         } finally {
           this.activeWorkers--;
-          // Process queue asynchronously to avoid blocking and ensure concurrent execution
+          // CRITICAL: Immediately process queue when worker becomes free
+          // This ensures next batch starts as soon as a worker is available
           setImmediate(() => this.processQueue());
         }
       };
 
       if (this.activeWorkers < this.maxWorkers) {
+        // CRITICAL: Increment BEFORE starting task to prevent race conditions
+        // This ensures we don't exceed maxWorkers when multiple tasks are submitted simultaneously
+        this.activeWorkers++;
         // Start task immediately - don't await, let it run concurrently
-        console.log(`[WorkerPool] Starting worker immediately (${this.activeWorkers + 1}/${this.maxWorkers} active)`);
         wrappedTask();
       } else {
-        console.log(`[WorkerPool] Queuing task (${this.activeWorkers}/${this.maxWorkers} active, ${this.queue.length + 1} queued)`);
+        // Queue is full, add to queue (will be processed when worker becomes free)
         this.queue.push(wrappedTask);
       }
     });
@@ -61,14 +69,15 @@ export class WorkerPool {
     while (this.queue.length > 0 && this.activeWorkers < this.maxWorkers && this.running) {
       const task = this.queue.shift();
       if (task) {
+        // CRITICAL: Increment BEFORE starting task to prevent race conditions
+        // This ensures we don't exceed maxWorkers when processing queue
+        this.activeWorkers++;
         // Start task immediately - don't await, let it run concurrently
         task();
         started++;
       }
     }
-    if (started > 0) {
-      console.log(`[WorkerPool] Started ${started} queued tasks (${this.activeWorkers}/${this.maxWorkers} active, ${this.queue.length} remaining)`);
-    }
+    // Removed verbose queue processing logs - batches will show their own progress
   }
 
   /**
@@ -80,6 +89,14 @@ export class WorkerPool {
       queued: this.queue.length,
       max: this.maxWorkers,
     };
+  }
+
+  /**
+   * Log current worker pool state (for debugging)
+   */
+  logStats(): void {
+    const stats = this.getStats();
+    console.log(`[WorkerPool] Stats: ${stats.active}/${stats.max} active, ${stats.queued} queued`);
   }
 
   /**

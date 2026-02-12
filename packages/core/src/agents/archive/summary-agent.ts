@@ -5,9 +5,9 @@ import {
   SUMMARY_AGENT_AUDIO_PROMPT,
   SUMMARY_AGENT_SCANNED_PDF_PROMPT,
 } from './prompts/summary-agent-prompt';
-import type { WorkerPool } from './worker-pool';
-import { executeApiCall } from './api-call-helper';
-import { createLLMClient, getProviderDisplayName, type LLMClient } from './llm-client';
+import type { WorkerPool } from '../worker-pool';
+import { executeApiCall } from '../api-call-helper';
+import { createLLMClient, getProviderDisplayName, type LLMClient } from '../llm-client';
 
 /**
  * Summary Agent

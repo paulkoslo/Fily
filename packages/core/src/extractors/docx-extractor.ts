@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as mammoth from 'mammoth';
 import type { Extractor, ExtractionResult, ExtractedContent } from './types';
+import { truncateToWordLimit, withTimeout } from './extractor-utils';
 
 /**
  * DOCX Extractor - extracts text from Microsoft Word documents
@@ -30,10 +31,24 @@ export class DocxExtractor implements Extractor {
         };
       }
 
-      const dataBuffer = await fs.promises.readFile(filePath);
-      const result = await mammoth.extractRawText({ buffer: dataBuffer });
+      const dataBuffer = await withTimeout(
+        fs.promises.readFile(filePath),
+        60000, // 60 second timeout
+        10000, // 10 second warning
+        filePath
+      );
       
-      const extractedText = result.value || '';
+      const result = await withTimeout(
+        mammoth.extractRawText({ buffer: dataBuffer }),
+        60000, // 60 second timeout
+        10000, // 10 second warning
+        filePath
+      );
+      
+      const rawText = result.value || '';
+      
+      // Truncate to 1000 words max for scalability
+      const extractedText = truncateToWordLimit(rawText);
       
       // Extract keywords from text
       const keywords = this.extractKeywords(extractedText);
@@ -48,6 +63,8 @@ export class DocxExtractor implements Extractor {
           extension,
           wordCount: extractedText.split(/\s+/).filter(w => w.length > 0).length,
           lineCount: extractedText.split('\n').length,
+          originalWordCount: rawText.split(/\s+/).filter(w => w.length > 0).length,
+          truncated: rawText.length !== extractedText.length,
         },
       };
 

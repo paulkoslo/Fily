@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import type { Extractor, ExtractionResult, ExtractedContent } from './types';
+import { withTimeout } from './extractor-utils';
 
 /**
  * Image Extractor - reads image files for processing by Summary Agent
@@ -35,7 +36,12 @@ export class ImageExtractor implements Extractor {
       }
 
       // Read image buffer - Summary Agent will process it directly with GPT-5-nano
-      const imageBuffer = await fs.promises.readFile(filePath);
+      const imageBuffer = await withTimeout(
+        fs.promises.readFile(filePath),
+        60000, // 60 second timeout
+        10000, // 10 second warning
+        filePath
+      );
       const mimeType = this.getMimeType(extension);
       
       // Extractors only extract raw content - classification is done by Summary Agent

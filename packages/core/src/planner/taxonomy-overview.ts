@@ -23,8 +23,8 @@ export function buildTaxonomyOverview(
   fileCards: FileCard[],
   options: BuildOverviewOptions = {}
 ): TaxonomyOverview {
-  const maxTags = options.maxTags ?? 20;
-  const samplesPerTag = options.samplesPerTag ?? 3;
+  const maxTags = options.maxTags ?? 50; // Increased from 20 to support larger datasets
+  const samplesPerTag = options.samplesPerTag ?? 20; // Increased from 3 to provide more context
 
   const byExtension: Record<string, number> = {};
   const byYear: Record<string, number> = {};

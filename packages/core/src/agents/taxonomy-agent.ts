@@ -46,7 +46,6 @@ export class TaxonomyAgent {
           'Set OPENROUTER_API_KEY or OPENAI_API_KEY in the Electron main process environment to enable AI taxonomy.'
       );
     } else {
-      console.log(`[TaxonomyAgent] Using ${getProviderDisplayName(this.llmClient.getProvider())} with model: ${this.llmClient.getModel()}`);
     }
     this.workerPool = workerPool || null;
   }

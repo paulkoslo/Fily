@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as JSZip from 'jszip';
 import type { Extractor, ExtractionResult, ExtractedContent } from './types';
+import { truncateToWordLimit, withTimeout } from './extractor-utils';
 
 /**
  * PPTX Extractor - extracts text from Microsoft PowerPoint presentations
@@ -32,8 +33,19 @@ export class PptxExtractor implements Extractor {
         };
       }
 
-      const dataBuffer = await fs.promises.readFile(filePath);
-      const zip = await JSZip.loadAsync(dataBuffer);
+      const dataBuffer = await withTimeout(
+        fs.promises.readFile(filePath),
+        60000, // 60 second timeout
+        10000, // 10 second warning
+        filePath
+      );
+      
+      const zip = await withTimeout(
+        JSZip.loadAsync(dataBuffer),
+        60000, // 60 second timeout
+        10000, // 10 second warning
+        filePath
+      );
       
       // Extract text from slide XML files
       const slideTexts: string[] = [];
@@ -56,7 +68,10 @@ export class PptxExtractor implements Extractor {
         }
       }
       
-      const extractedText = slideTexts.join('\n\n---\n\n');
+      const rawText = slideTexts.join('\n\n---\n\n');
+      
+      // Truncate to 1000 words max for scalability
+      const extractedText = truncateToWordLimit(rawText);
       
       // Extract keywords from text
       const keywords = this.extractKeywords(extractedText);
@@ -70,6 +85,8 @@ export class PptxExtractor implements Extractor {
           size: stats.size,
           extension,
           slideCount,
+          originalWordCount: rawText.split(/\s+/).filter(w => w.length > 0).length,
+          truncated: rawText.length !== extractedText.length,
         },
       };
 

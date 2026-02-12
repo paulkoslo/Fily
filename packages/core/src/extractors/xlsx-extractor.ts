@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import XLSX from 'xlsx';
 import type { Extractor, ExtractionResult, ExtractedContent } from './types';
+import { truncateToWordLimit, withTimeout } from './extractor-utils';
 
 /**
  * XLSX Extractor - extracts text from Microsoft Excel spreadsheets
@@ -30,8 +31,19 @@ export class XlsxExtractor implements Extractor {
         };
       }
 
-      const dataBuffer = await fs.promises.readFile(filePath);
-      const workbook = XLSX.read(dataBuffer, { type: 'buffer' });
+      const dataBuffer = await withTimeout(
+        fs.promises.readFile(filePath),
+        60000, // 60 second timeout
+        10000, // 10 second warning
+        filePath
+      );
+      
+      const workbook = await withTimeout(
+        Promise.resolve(XLSX.read(dataBuffer, { type: 'buffer' })),
+        60000, // 60 second timeout
+        10000, // 10 second warning
+        filePath
+      );
       
       // Extract text from all sheets
       const sheetTexts: string[] = [];
@@ -44,7 +56,10 @@ export class XlsxExtractor implements Extractor {
         sheetNames.push(sheetName);
       }
       
-      const extractedText = sheetTexts.join('\n\n---\n\n');
+      const rawText = sheetTexts.join('\n\n---\n\n');
+      
+      // Truncate to 1000 words max for scalability
+      const extractedText = truncateToWordLimit(rawText);
       
       // Extract keywords from text
       const keywords = this.extractKeywords(extractedText, sheetNames);
@@ -59,6 +74,8 @@ export class XlsxExtractor implements Extractor {
           extension,
           sheetCount: workbook.SheetNames.length,
           sheetNames,
+          originalWordCount: rawText.split(/\s+/).filter(w => w.length > 0).length,
+          truncated: rawText.length !== extractedText.length,
         },
       };
 

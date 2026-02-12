@@ -2014,7 +2014,14 @@ export class DatabaseManager {
     const db = this.ensureReady();
     const now = Date.now();
     const keywordsJson = JSON.stringify(keywords);
-    const metadataJson = metadata ? JSON.stringify(metadata) : null;
+    
+    // CRITICAL: Truncate metadata to max 2000 characters before storing
+    let metadataJson: string | null = null;
+    if (metadata) {
+      const { truncateMetadata } = await import('../extractors/extractor-utils');
+      const truncated = truncateMetadata(metadata);
+      metadataJson = truncated ? JSON.stringify(truncated) : null;
+    }
 
     // Check if tags column exists (for migration compatibility)
     const tableInfo = db.prepare(`PRAGMA table_info(file_content)`).all() as Array<{ name: string }>;

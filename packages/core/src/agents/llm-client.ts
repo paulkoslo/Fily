@@ -131,14 +131,53 @@ export class LLMClient {
       temperature?: number;
     }
   ): Promise<string> {
-    const response = await this.client.chat.completions.create({
-      model: options?.model ?? this.model,
-      messages,
-      max_completion_tokens: options?.maxTokens ?? 5000,
-      temperature: options?.temperature,
-    });
+    const modelToUse = options?.model ?? this.model;
+    const provider = this.getProvider();
+    
+    try {
+      console.log(`[LLMClient] Making API call - Provider: ${provider}, Model: ${modelToUse}, Messages: ${messages.length}`);
+      
+      const response = await this.client.chat.completions.create({
+        model: modelToUse,
+        messages,
+        max_completion_tokens: options?.maxTokens ?? 5000,
+        temperature: options?.temperature,
+      });
 
-    return response.choices[0]?.message?.content?.trim() ?? '';
+      // CRITICAL: Log full response structure for debugging
+      console.log(`[LLMClient] Response received - Type: ${typeof response}, Has choices: ${!!response.choices}, Choices type: ${Array.isArray(response.choices) ? 'array' : typeof response.choices}`);
+      
+      if (!response.choices) {
+        console.error(`[LLMClient] ❌ Response has no choices property! Full response:`, JSON.stringify(response, null, 2));
+        throw new Error(`API response missing 'choices' property. Response structure: ${JSON.stringify(Object.keys(response || {}))}`);
+      }
+      
+      if (!Array.isArray(response.choices)) {
+        console.error(`[LLMClient] ❌ Response.choices is not an array! Type: ${typeof response.choices}, Value:`, response.choices);
+        throw new Error(`API response 'choices' is not an array. Type: ${typeof response.choices}`);
+      }
+      
+      if (response.choices.length === 0) {
+        console.error(`[LLMClient] ❌ Response.choices array is empty! Full response:`, JSON.stringify(response, null, 2));
+        throw new Error('API response has empty choices array');
+      }
+
+      const content = response.choices[0]?.message?.content?.trim() ?? '';
+      
+      if (!content) {
+        console.warn(
+          `[LLMClient] Empty content in response. Choices: ${response.choices.length}, ` +
+          `Finish reason: ${response.choices[0]?.finish_reason}, ` +
+          `Model: ${modelToUse}, Provider: ${provider}`
+        );
+        console.warn(`[LLMClient] Full first choice:`, JSON.stringify(response.choices[0], null, 2));
+      }
+      
+      return content;
+    } catch (error) {
+      console.error(`[LLMClient] Error in chatCompletion:`, error);
+      throw error;
+    }
   }
 }
 

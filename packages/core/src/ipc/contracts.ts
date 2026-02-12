@@ -357,13 +357,19 @@ export const ExtractContentRequestSchema = z.object({
 });
 
 export const ExtractionProgressSchema = z.object({
-  status: z.enum(['extracting', 'done', 'error']),
+  status: z.enum(['scanning', 'extracting', 'done', 'error']),
   filesProcessed: z.number(),
   filesTotal: z.number(),
   currentFile: z.string(),
   message: z.string(),
-  step: z.string().optional(), // e.g., "Step 2/3: Extracting content..."
-  phase: z.string().optional(), // e.g., "extracting", "summarizing", "tagging", "storing"
+  step: z.string().optional(), // e.g., "Step 1/3: Scanning files..." or "Step 2/3: Extracting content..."
+  phase: z.string().optional(), // e.g., "scanning", "extracting", "summarizing", "tagging", "storing"
+  // Progress tracking: scanning (1 step) + batches (creation + completion)
+  totalSteps: z.number().optional(), // Total steps: 1 (scanning) + batchesTotal * 2
+  currentStep: z.number().optional(), // Current step (0-based)
+  batchesTotal: z.number().optional(), // Total number of batches
+  batchesSent: z.number().optional(), // Number of batches sent (creation step)
+  batchesCompleted: z.number().optional(), // Number of batches completed (completion step)
 });
 
 export const ExtractContentResponseSchema = z.object({
@@ -401,6 +407,30 @@ export const RunPlannerResponseSchema = z.object({
 export type RunPlannerRequest = z.infer<typeof RunPlannerRequestSchema>;
 export type PlannerProgress = z.infer<typeof PlannerProgressSchema>;
 export type RunPlannerResponse = z.infer<typeof RunPlannerResponseSchema>;
+
+// runOptimizer (optimize low-confidence files only)
+export const RunOptimizerRequestSchema = z.object({
+  sourceId: z.number().optional(),
+});
+
+export const OptimizerProgressSchema = z.object({
+  status: z.enum(['optimizing', 'done', 'error']),
+  filesTotal: z.number(),
+  filesOptimized: z.number(),
+  message: z.string(),
+  step: z.string().optional(),
+  progressPercent: z.number().optional(),
+});
+
+export const RunOptimizerResponseSchema = z.object({
+  success: z.boolean(),
+  filesOptimized: z.number(),
+  error: z.string().optional(),
+});
+
+export type RunOptimizerRequest = z.infer<typeof RunOptimizerRequestSchema>;
+export type OptimizerProgress = z.infer<typeof OptimizerProgressSchema>;
+export type RunOptimizerResponse = z.infer<typeof RunOptimizerResponseSchema>;
 
 // getFileContent
 export const GetFileContentRequestSchema = z.object({
@@ -607,6 +637,8 @@ export const IPC_CHANNELS = {
   GET_VIRTUAL_CHILDREN: 'get-virtual-children',
   RUN_PLANNER: 'run-planner',
   PLANNER_PROGRESS: 'planner-progress',
+  RUN_OPTIMIZER: 'run-optimizer',
+  OPTIMIZER_PROGRESS: 'optimizer-progress',
   GET_API_KEY_STATUS: 'get-api-key-status',
   SAVE_API_KEY: 'save-api-key',
   DELETE_API_KEY: 'delete-api-key',
