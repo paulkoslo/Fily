@@ -4,7 +4,7 @@ import { FileBrowser } from './components/FileBrowser';
 import { LibraryView } from './components/LibraryView';
 import { VirtualLibraryView } from './components/VirtualLibraryView';
 import { VirtualTreeView } from './components/VirtualTreeView';
-import { SearchInput } from './components/SearchInput';
+import { SearchBar } from './components/SearchBar';
 import { Settings } from './components/Settings';
 import { SettingsButton } from './components/SettingsButton';
 import { MemoryInfo } from './components/MemoryInfo';
@@ -19,7 +19,7 @@ function App() {
   const [files, setFiles] = useState<FileRecord[]>([]);
   const [currentPath, setCurrentPath] = useState<string | null>(null);
   const [pathHistory, setPathHistory] = useState<(string | null)[]>([]);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchInput, setSearchInput] = useState(''); // Search input (independent from file viewer)
   const [isScanning, setIsScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -49,6 +49,7 @@ function App() {
   const [isSavingApiKey, setIsSavingApiKey] = useState(false);
   const [isApiKeyMutating, setIsApiKeyMutating] = useState(false);
   const [statusBarPath, setStatusBarPath] = useState<string[]>([]);
+  const [selectedFileId, setSelectedFileId] = useState<string | null>(null); // Selected file for future selection/moving features
 
   const loadSources = async () => {
     try {
@@ -218,7 +219,7 @@ function App() {
         // Set new timeout to refresh after 1 second
         refreshTimeoutRef.current = setTimeout(() => {
           console.log('[App] Refreshing content due to file change');
-          loadContent(selectedSourceId, currentPath, searchQuery);
+          loadContent(selectedSourceId, currentPath);
         }, 1000);
       }
     });
@@ -229,7 +230,7 @@ function App() {
         clearTimeout(refreshTimeoutRef.current);
       }
     };
-  }, [selectedSourceId, currentPath, searchQuery, loadContent]);
+  }, [selectedSourceId, currentPath, loadContent]);
 
   // Load watch status on mount and when sources change
   useEffect(() => {
@@ -325,28 +326,23 @@ function App() {
     fetchModel();
   }, []);
 
-  // Load files and folders when source, path, or search query changes
+  // Load files and folders when source or path changes (NOT when search input changes)
+  // NOTE: This useEffect handles normal navigation. Search result clicks explicitly call loadContent
+  // and set selectedFileId, so we don't clear selection here to avoid race conditions.
   useEffect(() => {
-    if (selectedSourceId !== null) {
-      loadContent(selectedSourceId, currentPath, searchQuery);
+    if (selectedSourceId !== null && viewMode === 'filesystem') {
+      loadContent(selectedSourceId, currentPath); // Remove searchQuery - search is independent
+      // Don't clear selectedFileId here - let search handler manage it, or clear only on manual navigation
+      // We'll clear it when viewMode changes instead (see useEffect below)
     }
-  }, [selectedSourceId, currentPath, searchQuery, loadContent]);
+  }, [selectedSourceId, currentPath, loadContent, viewMode]);
 
-  // Update status bar path when in filesystem search mode
+  // Clear selection when switching view modes
   useEffect(() => {
-    if (viewMode === 'filesystem' && searchQuery.trim()) {
-      const source = sources.find((s) => s.id === selectedSourceId);
-      const segments = source ? [source.name, `Search: "${searchQuery.trim()}"`] : [];
-      setStatusBarPath(segments);
-    }
-  }, [viewMode, searchQuery, selectedSourceId, sources]);
+    setSelectedFileId(null);
+  }, [viewMode]);
 
-  // Clear path when no source selected in filesystem mode
-  useEffect(() => {
-    if (viewMode === 'filesystem' && !searchQuery.trim() && selectedSourceId === null) {
-      setStatusBarPath([]);
-    }
-  }, [viewMode, searchQuery, selectedSourceId]);
+  // Status bar path is managed by view mode and navigation, not by search
 
   const saveApiKey = useCallback(
     async (apiKey: string, target: 'modal' | 'settings', keyType: ApiKeyType = 'openai'): Promise<boolean> => {
@@ -457,7 +453,7 @@ function App() {
       const response = await window.api.scanSource({ sourceId: selectedSourceId });
       if (response.success) {
         // Reload content after scan
-        await loadContent(selectedSourceId, currentPath, searchQuery);
+        await loadContent(selectedSourceId, currentPath);
       } else {
         setError(response.error || 'Scan failed');
         setScanProgress(null);
@@ -582,7 +578,7 @@ function App() {
     // Navigate into folder
     setPathHistory((prev) => [...prev, currentPath]);
     setCurrentPath(folder.relative_path);
-    setSearchQuery('');
+    setSelectedFileId(null); // Clear selection when navigating
   }, [currentPath]);
 
   const handleNavigateUp = useCallback(() => {
@@ -618,16 +614,15 @@ function App() {
   }, []);
 
   const handleSearchChange = useCallback((query: string) => {
-    setSearchQuery(query);
-    // Search shows results from all directories, but we don't reset path history
-    // so user can clear search and return to where they were
+    setSearchInput(query);
+    // Search is independent - doesn't affect file viewer until result is clicked
   }, []);
 
   const handleSourceSelect = useCallback((sourceId: number) => {
     setSelectedSourceId(sourceId);
     setCurrentPath(null);
     setPathHistory([]);
-    setSearchQuery('');
+    setSearchInput(''); // Clear search input when switching sources
   }, []);
 
   const dismissError = useCallback(() => {
@@ -820,6 +815,8 @@ function App() {
   const handleVirtualPathChange = useCallback((path: string) => {
     setCurrentVirtualPath(path);
     setStatusBarPath(path === '/' ? [] : path.split('/').filter(Boolean));
+    // Clear selection when navigating virtual paths
+    setSelectedFileId(null);
   }, []);
 
   const handleLibraryPathChange = useCallback((segments: string[]) => {
@@ -961,10 +958,83 @@ function App() {
                 </div>
               )}
             </div>
-            <SearchInput
-              value={searchQuery}
+            <SearchBar
+              value={searchInput}
               onChange={handleSearchChange}
+              onResultSelect={async (result) => {
+                // Navigate to the file location and select it (stay in current view)
+                try {
+                  // Determine target source ID (may need to switch sources)
+                  const targetSourceId = result.source_id !== selectedSourceId ? result.source_id : selectedSourceId;
+                  
+                  // Switch to the file's source if different
+                  if (result.source_id !== selectedSourceId) {
+                    setSelectedSourceId(result.source_id);
+                  }
+
+                  if (viewMode === 'filesystem') {
+                    // Filesystem view: navigate to the file's parent folder
+                    // Use parent_path if available, otherwise extract from relative_path
+                    let targetPath: string | null = null;
+                    if (result.parent_path !== null && result.parent_path !== undefined) {
+                      targetPath = result.parent_path;
+                    } else if (result.relative_path) {
+                      // Extract parent path from relative_path
+                      const pathParts = result.relative_path.split('/').filter(p => p.length > 0);
+                      if (pathParts.length > 1) {
+                        // File is in a subfolder - navigate to parent folder
+                        targetPath = pathParts.slice(0, -1).join('/');
+                      } else {
+                        // File is in root - navigate to root
+                        targetPath = null;
+                      }
+                    }
+                    
+                    // Set path and load content immediately
+                    setCurrentPath(targetPath);
+                    setPathHistory([]);
+                    
+                    // Explicitly load content for the new path (don't rely on useEffect timing)
+                    await loadContent(targetSourceId, targetPath);
+                    
+                    // Set selected file AFTER content is loaded
+                    setSelectedFileId(result.file_id);
+                  } else {
+                    // Virtual view: navigate to the file's virtual folder
+                    if (result.virtual_path) {
+                      // Extract parent path from virtual_path (remove filename)
+                      const pathParts = result.virtual_path.split('/').filter(p => p.length > 0);
+                      if (pathParts.length > 1) {
+                        // File is in a virtual folder - navigate to parent folder
+                        const parentVirtualPath = '/' + pathParts.slice(0, -1).join('/');
+                        setCurrentVirtualPath(parentVirtualPath);
+                        setStatusBarPath(pathParts.slice(0, -1));
+                        // VirtualTreeView's useEffect will automatically load children for this path
+                      } else {
+                        // File is in root virtual folder
+                        setCurrentVirtualPath('/');
+                        setStatusBarPath([]);
+                        // VirtualTreeView will show root children automatically
+                      }
+                    } else {
+                      // No virtual_path - file not organized yet, stay in virtual view but show message
+                      // User can switch to filesystem view manually if needed
+                      setCurrentVirtualPath('/');
+                      setStatusBarPath([]);
+                    }
+                    
+                    // Set selected file (VirtualTreeView will handle highlighting)
+                    setSelectedFileId(result.file_id);
+                  }
+
+                  // Clear search input after navigation
+                  setSearchInput('');
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : 'Failed to navigate to file');
+                }
+              }}
               disabled={selectedSourceId === null || isScanning || isExtracting}
+              sourceId={selectedSourceId}
             />
             <div className="toolbar-actions">
             <button
@@ -1183,31 +1253,13 @@ function App() {
         )}
 
         {viewMode === 'filesystem' ? (
-          !!searchQuery.trim() ? (
-            <>
-              {files.length > 0 && (
-                <div style={{ padding: '12px 24px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                  <strong>Tip:</strong> Right-click any file to view its extracted content.
-                </div>
-              )}
-              <FileBrowser
-                folders={folders}
-                files={files}
-                isLoading={isLoading}
-                currentPath={currentPath}
-                isSearching={true}
-                onFolderClick={handleFolderClick}
-                onFolderDoubleClick={handleFolderDoubleClick}
-                onFileDoubleClick={handleFileDoubleClick}
-                onFileRightClick={handleFileRightClick}
-                onFileCardClick={handleFileCardClick}
-                onNavigateUp={handleNavigateUp}
-              />
-            </>
-          ) : selectedSourceId !== null && layoutMode === 'library' ? (
+          selectedSourceId !== null && layoutMode === 'library' ? (
             <LibraryView
               sourceId={selectedSourceId}
               sourceName={sources.find((s) => s.id === selectedSourceId)?.name ?? ''}
+              selectedFileId={selectedFileId}
+              navigateToPath={viewMode === 'filesystem' ? currentPath : undefined}
+              onFileSelect={setSelectedFileId}
               onPathChange={handleLibraryPathChange}
               onFileDoubleClick={handleFileDoubleClick}
               onFileRightClick={handleFileRightClick}
@@ -1226,6 +1278,8 @@ function App() {
                 isLoading={isLoading}
                 currentPath={currentPath}
                 isSearching={false}
+                selectedFileId={selectedFileId}
+                onFileSelect={setSelectedFileId}
                 onFolderClick={handleFolderClick}
                 onFolderDoubleClick={handleFolderDoubleClick}
                 onFileDoubleClick={handleFileDoubleClick}
@@ -1241,6 +1295,9 @@ function App() {
           <VirtualLibraryView
             virtualTree={virtualTree}
             isLoading={isLoading}
+            selectedFileId={selectedFileId}
+            navigateToPath={viewMode === 'virtual' ? currentVirtualPath : undefined}
+            onFileSelect={setSelectedFileId}
             onPathChange={handleVirtualLibraryPathChange}
             onFileClick={handleFileDoubleClick}
             onFileRightClick={handleFileRightClick}
@@ -1252,6 +1309,8 @@ function App() {
             virtualTree={virtualTree}
             isLoading={isLoading}
             currentVirtualPath={currentVirtualPath}
+            selectedFileId={selectedFileId}
+            onFileSelect={setSelectedFileId}
             onFileClick={handleFileDoubleClick}
             onFileRightClick={handleFileRightClick}
             onFileCardClick={handleFileCardClick}

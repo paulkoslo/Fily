@@ -784,6 +784,187 @@ export class DatabaseManager {
     });
   }
 
+  /**
+   * Smart search with ranking: filename matches > summary matches > tag matches
+   * Returns results sorted by match type priority and relevance score.
+   */
+  async smartSearchFiles(query: string, sourceId?: number, limit: number = 20): Promise<Array<{
+    file_id: string;
+    name: string;
+    path: string;
+    relative_path: string | null;
+    parent_path: string | null;
+    extension: string;
+    size: number;
+    mtime: number;
+    source_id: number;
+    match_type: 'filename' | 'summary' | 'tags';
+    match_score: number;
+    summary: string | null;
+    tags: string[] | null;
+    virtual_path: string | null;
+  }>> {
+    const db = this.ensureReady();
+    
+    // Check if tags column exists
+    const tableInfo = db.prepare(`PRAGMA table_info(file_content)`).all() as Array<{ name: string }>;
+    const hasTagsColumn = tableInfo.some(col => col.name === 'tags');
+    
+    const searchQuery = query.trim().toLowerCase();
+    if (searchQuery.length === 0) {
+      return [];
+    }
+    
+    const searchPattern = `%${searchQuery}%`;
+    
+    // Build WHERE clause for source filtering
+    let sourceFilter = '';
+    const params: (string | number)[] = [];
+    if (sourceId !== undefined) {
+      sourceFilter = 'AND f.source_id = ?';
+      params.push(sourceId);
+    }
+    
+    const tagsSelect = hasTagsColumn ? 'fc.tags' : 'NULL as tags';
+    const tagsWhere = hasTagsColumn 
+      ? 'OR (fc.tags IS NOT NULL AND LOWER(fc.tags) LIKE ?)'
+      : '';
+    
+    // Simplified SQL: Get all matching files, then rank in JavaScript for better control
+    const sql = `
+      SELECT 
+        f.file_id,
+        f.name,
+        f.path,
+        f.relative_path,
+        f.parent_path,
+        f.extension,
+        f.size,
+        f.mtime,
+        f.source_id,
+        fc.summary,
+        ${tagsSelect},
+        vp.virtual_path
+      FROM files f
+      LEFT JOIN file_content fc ON f.file_id = fc.file_id
+      LEFT JOIN virtual_placements vp ON f.file_id = vp.file_id
+      WHERE (f.status IS NULL OR f.status = 'present')
+        ${sourceFilter}
+        AND (
+          LOWER(f.name) LIKE ?
+          OR (fc.summary IS NOT NULL AND LOWER(fc.summary) LIKE ?)
+          ${tagsWhere}
+        )
+      ORDER BY f.mtime DESC
+      LIMIT ?
+    `;
+    
+    const searchParams = hasTagsColumn 
+      ? [searchPattern, searchPattern, searchPattern]
+      : [searchPattern, searchPattern];
+    const allParams = [...params, ...searchParams, limit * 3]; // Get more results to rank, then limit
+    
+    const rows = db.prepare(sql).all(...allParams) as Array<{
+      file_id: string;
+      name: string;
+      path: string;
+      relative_path: string | null;
+      parent_path: string | null;
+      extension: string;
+      size: number;
+      mtime: number;
+      source_id: number;
+      summary: string | null;
+      tags: string | null;
+      virtual_path: string | null;
+    }>;
+    
+    // Rank results in JavaScript for better control
+    const rankedResults = rows.map(row => {
+      const nameLower = row.name.toLowerCase();
+      const summaryLower = row.summary?.toLowerCase() || '';
+      let tagsLower = '';
+      let parsedTags: string[] | null = null;
+      
+      if (row.tags) {
+        try {
+          const value = JSON.parse(row.tags);
+          if (Array.isArray(value)) {
+            parsedTags = value
+              .filter((t) => typeof t === 'string')
+              .map((t) => t.trim())
+              .filter((t) => t.length > 0);
+            tagsLower = parsedTags.join(' ').toLowerCase();
+          }
+        } catch {
+          parsedTags = null;
+        }
+      }
+      
+      // Determine match type and score
+      let match_type: 'filename' | 'summary' | 'tags' = 'filename';
+      let match_score = 0;
+      
+      // Check filename match (highest priority)
+      if (nameLower.includes(searchQuery)) {
+        match_type = 'filename';
+        match_score = 1000;
+        // Bonus for exact match
+        if (nameLower === searchQuery) {
+          match_score += 100;
+        }
+        // Bonus for starts with
+        if (nameLower.startsWith(searchQuery)) {
+          match_score += 50;
+        }
+      }
+      // Check summary match (medium priority)
+      else if (summaryLower.includes(searchQuery)) {
+        match_type = 'summary';
+        match_score = 500;
+        // Bonus for multiple occurrences
+        const occurrences = (summaryLower.match(new RegExp(searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+        match_score += Math.min(occurrences * 10, 50);
+      }
+      // Check tag match (lowest priority)
+      else if (tagsLower.includes(searchQuery)) {
+        match_type = 'tags';
+        match_score = 100;
+        // Bonus for exact tag match
+        if (parsedTags?.some(tag => tag.toLowerCase() === searchQuery)) {
+          match_score += 50;
+        }
+      }
+      
+      return {
+        file_id: row.file_id,
+        name: row.name,
+        path: row.path,
+        relative_path: row.relative_path,
+        parent_path: row.parent_path,
+        extension: row.extension,
+        size: row.size,
+        mtime: row.mtime,
+        source_id: row.source_id,
+        match_type,
+        match_score,
+        summary: row.summary,
+        tags: parsedTags,
+        virtual_path: row.virtual_path,
+      };
+    });
+    
+    // Sort by score (descending) and limit
+    return rankedResults
+      .sort((a, b) => {
+        if (b.match_score !== a.match_score) {
+          return b.match_score - a.match_score;
+        }
+        return b.mtime - a.mtime; // Tie-breaker: newer files first
+      })
+      .slice(0, limit);
+  }
+
   async getFileCount(sourceId: number): Promise<number> {
     const db = this.ensureReady();
     const stmt = db.prepare(`SELECT COUNT(*) as count FROM files WHERE source_id = ?`);

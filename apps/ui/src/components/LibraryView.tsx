@@ -15,6 +15,9 @@ interface ColumnData {
 interface LibraryViewProps {
   sourceId: number;
   sourceName: string;
+  selectedFileId?: string | null; // File ID to highlight/select (from search results)
+  navigateToPath?: string | null; // Path to navigate to (from search results)
+  onFileSelect?: (fileId: string | null) => void; // Callback to update selection
   onPathChange: (segments: string[]) => void;
   onFileDoubleClick: (file: FileRecord) => void;
   onFileRightClick?: (file: FileRecord) => void;
@@ -32,6 +35,9 @@ function formatFileSize(bytes: number): string {
 export function LibraryView({
   sourceId,
   sourceName,
+  selectedFileId,
+  navigateToPath,
+  onFileSelect,
   onPathChange,
   onFileDoubleClick,
   onFileRightClick,
@@ -45,6 +51,7 @@ export function LibraryView({
   const [selectedFile, setSelectedFile] = useState<FileRecord | null>(null);
   const [isResizing, setIsResizing] = useState(false);
   const resizeRef = useRef<{ columnIndex: number; startX: number; startWidth: number } | null>(null);
+  const selectedFileRef = useRef<HTMLDivElement | null>(null);
 
   const loadColumn = useCallback(async (parentPath: string | null) => {
     try {
@@ -103,6 +110,59 @@ export function LibraryView({
     setSelectedFile(null);
   }, [sourceId]);
 
+  // Navigate to path when navigateToPath changes (from search results)
+  useEffect(() => {
+    if (navigateToPath === undefined) return; // undefined = not set, null = root
+    
+    // Build column paths from navigateToPath
+    // navigateToPath is like "folder1/folder2" or null for root
+    if (navigateToPath === null) {
+      // Navigate to root
+      setColumnPaths([null]);
+      setSelectedFolderInColumn([]);
+      return;
+    }
+
+    // Split path into segments and build column structure
+    const pathSegments = navigateToPath.split('/').filter(p => p.length > 0);
+    const newPaths: (string | null)[] = [null]; // Start with root
+    const newSelections: (string | null)[] = [];
+
+    // Build up columns for each path segment
+    for (let i = 0; i < pathSegments.length; i++) {
+      const segment = pathSegments[i];
+      const currentPath = pathSegments.slice(0, i + 1).join('/');
+      newPaths.push(currentPath);
+      newSelections.push(segment);
+    }
+
+    setColumnPaths(newPaths);
+    setSelectedFolderInColumn(newSelections);
+  }, [navigateToPath]);
+
+  // Navigate to file when selectedFileId changes (from search results)
+  useEffect(() => {
+    if (!selectedFileId) {
+      setSelectedFile(null);
+      return;
+    }
+
+    // Find the file in the last column (where files should be)
+    const lastColumnIndex = columnData.length - 1;
+    if (lastColumnIndex >= 0) {
+      const file = columnData[lastColumnIndex]?.files.find(f => f.file_id === selectedFileId);
+      if (file) {
+        setSelectedFile(file);
+        // Scroll to file after a small delay to ensure DOM is updated
+        setTimeout(() => {
+          if (selectedFileRef.current) {
+            selectedFileRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        }, 200);
+      }
+    }
+  }, [selectedFileId, columnData]);
+
   // Resize handling
   const handleResizeStart = useCallback((columnIndex: number, e: React.MouseEvent) => {
     e.preventDefault();
@@ -157,7 +217,8 @@ export function LibraryView({
     onPathChange(segments);
   }, [sourceName, selectedFolderInColumn, selectedFile, onPathChange]);
 
-  const handleFolderSelect = useCallback((columnIndex: number, folder: FolderRecord) => {
+  const handleFolderSelect = useCallback((columnIndex: number, folder: FolderRecord, e: React.MouseEvent) => {
+    e.stopPropagation(); // Prevent library view click
     const newPaths = columnPaths.slice(0, columnIndex + 1);
     newPaths.push(folder.relative_path);
     setColumnPaths(newPaths);
@@ -166,11 +227,20 @@ export function LibraryView({
     newSelection.push(folder.name);
     setSelectedFolderInColumn(newSelection);
     setSelectedFile(null);
-  }, [columnPaths, selectedFolderInColumn]);
+    // Clear selection when clicking folder
+    if (onFileSelect) {
+      onFileSelect(null);
+    }
+  }, [columnPaths, selectedFolderInColumn, onFileSelect]);
 
-  const handleFileSelect = useCallback((file: FileRecord) => {
+  const handleFileSelect = useCallback((file: FileRecord, e: React.MouseEvent) => {
+    e.stopPropagation(); // Prevent library view click from clearing selection
     setSelectedFile(file);
-  }, []);
+    // Notify parent component of selection
+    if (onFileSelect) {
+      onFileSelect(file.file_id);
+    }
+  }, [onFileSelect]);
 
   const handleFileDoubleClick = useCallback((file: FileRecord) => {
     onFileDoubleClick(file);
@@ -181,8 +251,18 @@ export function LibraryView({
     if (onFileRightClick) onFileRightClick(file);
   }, [onFileRightClick]);
 
+  const handleLibraryViewClick = useCallback((e: React.MouseEvent) => {
+    // Clear selection when clicking anywhere in library view (not on a file/folder)
+    const target = e.target as HTMLElement;
+    if (target.classList.contains('library-view') || target.classList.contains('library-column-content')) {
+      if (onFileSelect) {
+        onFileSelect(null);
+      }
+    }
+  }, [onFileSelect]);
+
   return (
-    <div className="library-view">
+    <div className="library-view" onClick={handleLibraryViewClick}>
       {columnPaths.map((_, colIndex) => {
         const data = columnData[colIndex] || { folders: [], files: [], isLoading: false };
         const selectedFolderName = selectedFolderInColumn[colIndex];
@@ -205,17 +285,20 @@ export function LibraryView({
                     <div
                       key={folder.folder_id}
                       className={`library-item folder-item ${selectedFolderName === folder.name ? 'selected' : ''}`}
-                      onClick={() => handleFolderSelect(colIndex, folder)}
+                      onClick={(e) => handleFolderSelect(colIndex, folder, e)}
                     >
                       <FolderIcon />
                       <span className="library-item-name">{folder.name}</span>
                     </div>
                   ))}
-                  {data.files.map((file) => (
+                  {data.files.map((file) => {
+                    const isSelected = selectedFile?.file_id === file.file_id || selectedFileId === file.file_id;
+                    return (
                     <div
                       key={file.file_id}
-                      className={`library-item file-item ${selectedFile?.file_id === file.file_id ? 'selected' : ''}`}
-                      onClick={() => handleFileSelect(file)}
+                      ref={isSelected ? selectedFileRef : null}
+                      className={`library-item file-item ${isSelected ? 'selected' : ''}`}
+                      onClick={(e) => handleFileSelect(file, e)}
                       onDoubleClick={() => handleFileDoubleClick(file)}
                       onContextMenu={(e) => handleFileRightClick(file, e)}
                     >
@@ -236,7 +319,8 @@ export function LibraryView({
                         ℹ️
                       </span>
                     </div>
-                  ))}
+                    );
+                  })}
                 </>
               )}
             </div>

@@ -10,6 +10,9 @@ import {
   ScanSourceRequestSchema,
   ListFilesRequestSchema,
   type ListFilesRequest,
+  SmartSearchFilesRequestSchema,
+  type SmartSearchFilesRequest,
+  type SmartSearchFilesResponse,
   ListFoldersRequestSchema,
   OpenFileRequestSchema,
   AddSourceRequestSchema,
@@ -562,6 +565,69 @@ export function registerIpcHandlers(
         return {
           success: false,
           files: [],
+          error: error instanceof Error ? error.message : 'Unknown error',
+        };
+      }
+    }
+  );
+
+  // Smart search files (ranked: filename > summary > tags)
+  ipcMain.handle(
+    IPC_CHANNELS.SMART_SEARCH_FILES,
+    async (_event, request: unknown): Promise<SmartSearchFilesResponse> => {
+      try {
+        const parsed = SmartSearchFilesRequestSchema.safeParse(request);
+        if (!parsed.success) {
+          return {
+            success: false,
+            results: [],
+            error: `Invalid request: ${parsed.error.message}`,
+          };
+        }
+
+        const { query, sourceId, limit } = parsed.data;
+        const results = await db.smartSearchFiles(query, sourceId, limit);
+
+        // Convert to response format
+        return {
+          success: true,
+          results: results.map((r: {
+            file_id: string;
+            name: string;
+            path: string;
+            relative_path: string | null;
+            parent_path: string | null;
+            extension: string;
+            size: number;
+            mtime: number;
+            source_id: number;
+            match_type: 'filename' | 'summary' | 'tags';
+            match_score: number;
+            summary: string | null;
+            tags: string[] | null;
+            virtual_path: string | null;
+          }) => ({
+            file_id: r.file_id,
+            name: r.name,
+            path: r.path,
+            relative_path: r.relative_path,
+            parent_path: r.parent_path,
+            extension: r.extension,
+            size: r.size,
+            mtime: r.mtime,
+            source_id: r.source_id,
+            match_type: r.match_type,
+            match_score: r.match_score,
+            summary: r.summary,
+            tags: r.tags || undefined,
+            virtual_path: r.virtual_path,
+          })),
+        };
+      } catch (error) {
+        console.error('Error in smart search:', error);
+        return {
+          success: false,
+          results: [],
           error: error instanceof Error ? error.message : 'Unknown error',
         };
       }

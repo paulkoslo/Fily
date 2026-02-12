@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { FileIcon } from './FileIcon';
 import { FolderIcon } from './FolderIcon';
 
@@ -6,6 +6,8 @@ interface VirtualTreeViewProps {
   virtualTree: VirtualNode | null;
   isLoading: boolean;
   currentVirtualPath: string;
+  selectedFileId?: string | null; // File ID to highlight/select
+  onFileSelect?: (fileId: string | null) => void; // Callback to update selection
   onFileClick: (file: FileRecord) => void;
   onFileRightClick?: (file: FileRecord) => void;
   onFileCardClick?: (file: FileRecord) => void;
@@ -25,6 +27,8 @@ export function VirtualTreeView({
   virtualTree,
   isLoading,
   currentVirtualPath,
+  selectedFileId,
+  onFileSelect,
   onFileClick,
   onFileRightClick,
   onFileCardClick,
@@ -34,8 +38,21 @@ export function VirtualTreeView({
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set(['/']));
   const [loadedChildren, setLoadedChildren] = useState<Map<string, VirtualNode[]>>(new Map());
   const [loadingChildren, setLoadingChildren] = useState<Set<string>>(new Set());
+  const selectedFileRef = useRef<HTMLDivElement | null>(null);
 
-  // Auto-expand path to current node when path changes
+  // Scroll to selected file when it becomes visible (wait for tree to load)
+  useEffect(() => {
+    if (selectedFileId && selectedFileRef.current && !isLoading && virtualTree) {
+      // Small delay to ensure DOM is updated and tree is expanded
+      setTimeout(() => {
+        if (selectedFileRef.current) {
+          selectedFileRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }, 200);
+    }
+  }, [selectedFileId, isLoading, virtualTree]);
+
+  // Auto-expand path to current node when path changes and load children if needed
   useEffect(() => {
     if (!virtualTree || currentVirtualPath === '/') {
       return;
@@ -55,7 +72,58 @@ export function VirtualTreeView({
       pathsToExpand.forEach((p) => next.add(p));
       return next;
     });
-  }, [virtualTree, currentVirtualPath]);
+
+    // Load children for all parent paths if they're not loaded (for lazy loading)
+    if (onLoadChildren) {
+      const findNodeRecursive = (node: VirtualNode, targetPath: string): VirtualNode | null => {
+        if (node.path === targetPath) {
+          return node;
+        }
+        const childrenToCheck = loadedChildren.get(node.path) || node.children;
+        for (const child of childrenToCheck) {
+          const found = findNodeRecursive(child, targetPath);
+          if (found) return found;
+        }
+        return null;
+      };
+
+      const loadPathChildren = async (path: string) => {
+        // Check if children are already loaded or currently loading
+        if (loadedChildren.has(path) || loadingChildren.has(path)) {
+          return;
+        }
+
+        // Always load children for the path (don't check if node exists or has children)
+        // This ensures files are visible when navigating from search
+        setLoadingChildren((prev) => new Set(prev).add(path));
+        try {
+          const children = await onLoadChildren(path);
+          setLoadedChildren((prev) => {
+            const next = new Map(prev);
+            next.set(path, children);
+            return next;
+          });
+        } catch (err) {
+          console.error('Failed to load children for path:', path, err);
+        } finally {
+          setLoadingChildren((prev) => {
+            const next = new Set(prev);
+            next.delete(path);
+            return next;
+          });
+        }
+      };
+
+      // Load children for all paths leading to AND including current path
+      // This ensures the current path's children are loaded so files are visible
+      // Load in order: root first, then each parent, then current path
+      (async () => {
+        for (let i = 0; i < pathsToExpand.length; i++) {
+          await loadPathChildren(pathsToExpand[i]);
+        }
+      })();
+    }
+  }, [virtualTree, currentVirtualPath, onLoadChildren]);
 
   const toggleExpand = useCallback((path: string, event?: React.MouseEvent) => {
     // Prevent navigation when toggling expand
@@ -77,6 +145,12 @@ export function VirtualTreeView({
   const handleFolderClick = useCallback(
     async (node: VirtualNode, event: React.MouseEvent) => {
       if (node.type === 'folder') {
+        // Clear selection when clicking folder
+        event.stopPropagation(); // Prevent container click
+        if (onFileSelect) {
+          onFileSelect(null);
+        }
+        
         const wasExpanded = expandedPaths.has(node.path);
         toggleExpand(node.path, event);
         
@@ -102,7 +176,7 @@ export function VirtualTreeView({
         }
       }
     },
-    [toggleExpand, expandedPaths, onLoadChildren]
+    [toggleExpand, expandedPaths, onLoadChildren, onFileSelect]
   );
 
   // Double click: navigate into folder
@@ -147,10 +221,13 @@ export function VirtualTreeView({
     if (node.type === 'file') {
       if (!node.fileRecord) return null;
       const file = node.fileRecord;
+      const isSelected = selectedFileId === file.file_id;
       return (
         <div
           key={node.id}
-          className="file-item"
+          className={`file-item ${isSelected ? 'selected' : ''}`}
+          ref={isSelected ? selectedFileRef : null}
+          onClick={(e) => handleFileClick(file, e)}
           onDoubleClick={() => handleFileDoubleClick(file)}
           onContextMenu={(e) => {
             e.preventDefault();
@@ -257,41 +334,86 @@ export function VirtualTreeView({
     if (node.path === path) {
       return node;
     }
-    for (const child of node.children) {
+    // Check both node.children and loadedChildren (for lazy loading)
+    const childrenToCheck = loadedChildren.get(node.path) || node.children;
+    for (const child of childrenToCheck) {
       const found = findNode(child, path);
       if (found) return found;
     }
     return null;
   };
 
-  const currentNode = findNode(virtualTree, currentVirtualPath) || virtualTree;
-  const isEmpty = currentNode.children.length === 0;
+  // For non-root paths, always use loadedChildren if available (they're loaded via getVirtualChildren)
+  // For root, use tree children directly
   const isRoot = currentVirtualPath === '/';
+  let currentChildren: VirtualNode[] = [];
+  
+  if (isRoot) {
+    // Root: use tree children directly
+    currentChildren = virtualTree.children;
+  } else {
+    // Non-root: use loadedChildren if available, otherwise try to find node
+    if (loadedChildren.has(currentVirtualPath)) {
+      currentChildren = loadedChildren.get(currentVirtualPath)!;
+    } else {
+      // Fallback: try to find node in tree (might not have children if lazy loaded)
+      const currentNode = findNode(virtualTree, currentVirtualPath);
+      currentChildren = currentNode ? currentNode.children : [];
+    }
+  }
+  
+  const isEmpty = currentChildren.length === 0;
+
+  // Check if we're loading children for the current path
+  const isLoadingCurrentPath = loadingChildren.has(currentVirtualPath);
+
+  const handleContainerClick = useCallback((e: React.MouseEvent) => {
+    // Clear selection when clicking anywhere in the container (not on a file/folder)
+    // Check if the click target is the container or file-list itself
+    const target = e.target as HTMLElement;
+    if ((target === e.currentTarget || target.classList.contains('file-list')) && onFileSelect) {
+      onFileSelect(null);
+    }
+  }, [onFileSelect]);
+
+  const handleFileClick = useCallback((file: FileRecord, e: React.MouseEvent) => {
+    // Select file on single click
+    e.stopPropagation(); // Prevent container click from clearing selection
+    if (onFileSelect) {
+      onFileSelect(file.file_id);
+    }
+    // Don't prevent default - allow double-click to still work
+  }, [onFileSelect]);
 
   return (
-    <div className="file-list-container">
+    <div className="file-list-container" onClick={handleContainerClick}>
       {renderBreadcrumb()}
-      {isEmpty ? (
+      {isLoadingCurrentPath ? (
+        <div className="file-list-loading">Loading files...</div>
+      ) : isEmpty ? (
         <div className="file-list-empty">
           {currentVirtualPath === '/'
             ? 'No virtual organization yet. Click "Organize" to categorize files.'
             : 'This virtual folder is empty.'}
         </div>
       ) : (
-        <div className="file-list">
+        <div className="file-list" onClick={handleContainerClick}>
           {isRoot
             ? // Root view: Show full tree with expand/collapse
               virtualTree.children.map((child) => renderNode(child, 0))
             : // Folder view: Show only current folder's children (like FileBrowser)
-              currentNode.children.map((child) => {
+              currentChildren.map((child) => {
                 // Render as simple list items (no nesting)
                 if (child.type === 'file') {
                   if (!child.fileRecord) return null;
                   const file = child.fileRecord;
+                  const isSelected = selectedFileId === file.file_id;
                   return (
                     <div
                       key={child.id}
-                      className="file-item"
+                      className={`file-item ${isSelected ? 'selected' : ''}`}
+                      ref={isSelected ? selectedFileRef : null}
+                      onClick={(e) => handleFileClick(file, e)}
                       onDoubleClick={() => handleFileDoubleClick(file)}
                       onContextMenu={(e) => {
                         e.preventDefault();

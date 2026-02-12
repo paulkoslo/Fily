@@ -137,6 +137,40 @@ export const ListFilesResponseSchema = z.object({
 export type ListFilesRequest = z.infer<typeof ListFilesRequestSchema>;
 export type ListFilesResponse = z.infer<typeof ListFilesResponseSchema>;
 
+// smartSearchFiles - ranked search with filename > summary > tags priority
+export const SmartSearchFilesRequestSchema = z.object({
+  query: z.string().min(1), // Required, non-empty query
+  sourceId: z.number().optional(), // Optional: search within specific source, or all sources if omitted
+  limit: z.number().optional().default(20), // Max results to return
+});
+
+export const SmartSearchResultSchema = z.object({
+  file_id: z.string(),
+  name: z.string(),
+  path: z.string(),
+  relative_path: z.string().nullable(),
+  parent_path: z.string().nullable(), // Parent folder path for filesystem navigation
+  extension: z.string(),
+  size: z.number(),
+  mtime: z.number(),
+  source_id: z.number(),
+  match_type: z.enum(['filename', 'summary', 'tags']), // Which field matched
+  match_score: z.number(), // Higher = better match (for sorting)
+  summary: z.string().nullable(), // Include summary for display
+  tags: z.array(z.string()).optional(), // Include tags for display
+  virtual_path: z.string().nullable(), // Virtual path if file is organized
+});
+
+export const SmartSearchFilesResponseSchema = z.object({
+  success: z.boolean(),
+  results: z.array(SmartSearchResultSchema),
+  error: z.string().optional(),
+});
+
+export type SmartSearchFilesRequest = z.infer<typeof SmartSearchFilesRequestSchema>;
+export type SmartSearchFilesResponse = z.infer<typeof SmartSearchFilesResponseSchema>;
+export type SmartSearchResult = z.infer<typeof SmartSearchResultSchema>;
+
 // openFile
 export const OpenFileRequestSchema = z.object({
   path: z.string(),
@@ -551,6 +585,7 @@ export const IPC_CHANNELS = {
   SCAN_SOURCE: 'scan-source',
   SCAN_PROGRESS: 'scan-progress',
   LIST_FILES: 'list-files',
+  SMART_SEARCH_FILES: 'smart-search-files',
   LIST_FOLDERS: 'list-folders',
   GET_FOLDER_TREE: 'get-folder-tree',
   OPEN_FILE: 'open-file',

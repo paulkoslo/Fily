@@ -9,6 +9,9 @@ const MAX_COLUMN_WIDTH = 400;
 interface VirtualLibraryViewProps {
   virtualTree: VirtualNode | null;
   isLoading: boolean;
+  selectedFileId?: string | null; // File ID to highlight/select (from search results)
+  navigateToPath?: string | null; // Virtual path to navigate to (from search results)
+  onFileSelect?: (fileId: string | null) => void; // Callback to update selection
   onPathChange: (segments: string[]) => void;
   onFileClick: (file: FileRecord) => void;
   onFileRightClick?: (file: FileRecord) => void;
@@ -27,6 +30,9 @@ function formatFileSize(bytes: number): string {
 export function VirtualLibraryView({
   virtualTree,
   isLoading,
+  selectedFileId,
+  navigateToPath,
+  onFileSelect,
   onPathChange,
   onFileClick,
   onFileRightClick,
@@ -41,6 +47,7 @@ export function VirtualLibraryView({
   const [selectedFile, setSelectedFile] = useState<FileRecord | null>(null);
   const [isResizing, setIsResizing] = useState(false);
   const resizeRef = useRef<{ columnIndex: number; startX: number; startWidth: number } | null>(null);
+  const selectedFileRef = useRef<HTMLDivElement | null>(null);
 
   // Sync columnWidths when columnPaths changes
   useEffect(() => {
@@ -60,6 +67,57 @@ export function VirtualLibraryView({
     setColumnWidths([DEFAULT_COLUMN_WIDTH]);
     setSelectedFile(null);
   }, [virtualTree]);
+
+  // Navigate to path when navigateToPath changes (from search results)
+  useEffect(() => {
+    if (navigateToPath === undefined) return; // undefined = not set
+    
+    // navigateToPath is like "/folder1/folder2" or "/" for root
+    if (navigateToPath === '/' || navigateToPath === null) {
+      setColumnPaths(['/']);
+      return;
+    }
+
+    // Split path into segments and build column structure
+    const pathSegments = navigateToPath.split('/').filter(p => p.length > 0);
+    const newPaths: string[] = ['/']; // Start with root
+
+    // Build up columns for each path segment
+    for (let i = 0; i < pathSegments.length; i++) {
+      const currentPath = '/' + pathSegments.slice(0, i + 1).join('/');
+      newPaths.push(currentPath);
+    }
+
+    setColumnPaths(newPaths);
+  }, [navigateToPath]);
+
+  // Navigate to file when selectedFileId changes (from search results)
+  useEffect(() => {
+    if (!selectedFileId) {
+      setSelectedFile(null);
+      return;
+    }
+
+    // Find the file in the last column (where files should be)
+    const lastColumnIndex = columnData.length - 1;
+    if (lastColumnIndex >= 0) {
+      const column = columnData[lastColumnIndex];
+      if (column) {
+        for (const node of column) {
+          if (node.type === 'file' && node.fileRecord?.file_id === selectedFileId) {
+            setSelectedFile(node.fileRecord);
+            // Scroll to file after a small delay to ensure DOM is updated
+            setTimeout(() => {
+              if (selectedFileRef.current) {
+                selectedFileRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }
+            }, 200);
+            break;
+          }
+        }
+      }
+    }
+  }, [selectedFileId, columnData]);
 
   const handleResizeStart = useCallback((columnIndex: number, e: React.MouseEvent) => {
     e.preventDefault();
@@ -155,19 +213,37 @@ export function VirtualLibraryView({
     onPathChange(['Virtual', ...segments]);
   }, [columnPaths, selectedFile, onPathChange]);
 
-  const handleFolderSelect = useCallback(
-    (columnIndex: number, node: VirtualNode) => {
-      const newPaths = columnPaths.slice(0, columnIndex + 1);
-      newPaths.push(node.path);
-      setColumnPaths(newPaths);
-      setSelectedFile(null);
-    },
-    [columnPaths]
-  );
+  const handleFolderSelect = useCallback((columnIndex: number, node: VirtualNode, e: React.MouseEvent) => {
+    e.stopPropagation(); // Prevent library view click
+    // Clear selection when clicking folder
+    if (onFileSelect) {
+      onFileSelect(null);
+    }
+    // Navigate to folder (existing logic)
+    const newPaths = columnPaths.slice(0, columnIndex + 1);
+    newPaths.push(node.path);
+    setColumnPaths(newPaths);
+    setSelectedFile(null);
+  }, [onFileSelect, columnPaths]);
 
-  const handleFileSelect = useCallback((file: FileRecord) => {
+  const handleFileSelect = useCallback((file: FileRecord, e: React.MouseEvent) => {
+    e.stopPropagation(); // Prevent library view click from clearing selection
     setSelectedFile(file);
-  }, []);
+    // Notify parent component of selection
+    if (onFileSelect) {
+      onFileSelect(file.file_id);
+    }
+  }, [onFileSelect]);
+
+  const handleLibraryViewClick = useCallback((e: React.MouseEvent) => {
+    // Clear selection when clicking anywhere in library view (not on a file/folder)
+    const target = e.target as HTMLElement;
+    if (target.classList.contains('library-view') || target.classList.contains('library-column-content')) {
+      if (onFileSelect) {
+        onFileSelect(null);
+      }
+    }
+  }, [onFileSelect]);
 
   if (isLoading) {
     return (
@@ -188,7 +264,7 @@ export function VirtualLibraryView({
   }
 
   return (
-    <div className="library-view">
+    <div className="library-view" onClick={handleLibraryViewClick}>
       {columnPaths.map((_, colIndex) => {
         const isLoadingCol = loadingColumns.has(colIndex);
         const nodes = columnData[colIndex] ?? [];
@@ -214,7 +290,7 @@ export function VirtualLibraryView({
                       <div
                         key={node.id}
                         className={`library-item folder-item ${columnPaths[colIndex + 1] === node.path ? 'selected' : ''}`}
-                        onClick={() => handleFolderSelect(colIndex, node)}
+                        onClick={(e) => handleFolderSelect(colIndex, node, e)}
                       >
                         <FolderIcon />
                         <span className="library-item-name">{node.name}</span>
@@ -228,8 +304,9 @@ export function VirtualLibraryView({
                       return (
                         <div
                           key={node.id}
-                          className={`library-item file-item ${selectedFile?.file_id === file.file_id ? 'selected' : ''}`}
-                          onClick={() => handleFileSelect(file)}
+                          className={`library-item file-item ${selectedFile?.file_id === node.fileRecord?.file_id || selectedFileId === node.fileRecord?.file_id ? 'selected' : ''}`}
+                          ref={(selectedFile?.file_id === node.fileRecord?.file_id || selectedFileId === node.fileRecord?.file_id) ? selectedFileRef : null}
+                          onClick={(e) => handleFileSelect(file, e)}
                           onDoubleClick={() => onFileClick(file)}
                           onContextMenu={(e) => {
                             e.preventDefault();

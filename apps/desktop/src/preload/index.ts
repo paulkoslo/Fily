@@ -7,6 +7,10 @@ import {
   ScanProgressSchema,
   ListFilesRequestSchema,
   ListFilesResponseSchema,
+  SmartSearchFilesRequestSchema,
+  SmartSearchFilesResponseSchema,
+  type SmartSearchFilesRequest,
+  type SmartSearchFilesResponse,
   ListFoldersRequestSchema,
   ListFoldersResponseSchema,
   GetFolderTreeResponseSchema,
@@ -251,6 +255,18 @@ const api = {
       IPC_CHANNELS.LIST_FILES,
       ListFilesRequestSchema,
       ListFilesResponseSchema,
+      request
+    );
+  },
+
+  /**
+   * Smart search files with ranking (filename > summary > tags).
+   */
+  smartSearchFiles: (request: SmartSearchFilesRequest): Promise<SmartSearchFilesResponse> => {
+    return invoke(
+      IPC_CHANNELS.SMART_SEARCH_FILES,
+      SmartSearchFilesRequestSchema,
+      SmartSearchFilesResponseSchema,
       request
     );
   },

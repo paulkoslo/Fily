@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { FileIcon } from './FileIcon';
 import { FolderIcon } from './FolderIcon';
 
@@ -8,6 +8,8 @@ interface FileBrowserProps {
   isLoading: boolean;
   currentPath: string | null;
   isSearching: boolean;
+  selectedFileId?: string | null; // File ID to highlight/select
+  onFileSelect?: (fileId: string | null) => void; // Callback to update selection
   onFolderClick: (folder: FolderRecord) => void;
   onFolderDoubleClick: (folder: FolderRecord) => void;
   onFileDoubleClick: (file: FileRecord) => void;
@@ -38,6 +40,8 @@ export function FileBrowser({
   isLoading,
   currentPath,
   isSearching,
+  selectedFileId,
+  onFileSelect,
   onFolderClick,
   onFolderDoubleClick,
   onFileDoubleClick,
@@ -69,6 +73,19 @@ export function FileBrowser({
     [onFileRightClick]
   );
 
+  // Scroll to selected file when it becomes visible (wait for files to load)
+  const selectedFileRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (selectedFileId && selectedFileRef.current && !isLoading && files.length > 0) {
+      // Small delay to ensure DOM is updated
+      setTimeout(() => {
+        if (selectedFileRef.current) {
+          selectedFileRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }, 100);
+    }
+  }, [selectedFileId, isLoading, files.length]);
+
   if (isLoading) {
     return (
       <div className="file-list-container">
@@ -79,8 +96,35 @@ export function FileBrowser({
 
   const isEmpty = folders.length === 0 && files.length === 0;
 
+  const handleContainerClick = useCallback((e: React.MouseEvent) => {
+    // Clear selection when clicking anywhere in the container (not on a file/folder)
+    // Check if the click target is the container or file-list itself
+    const target = e.target as HTMLElement;
+    if ((target === e.currentTarget || target.classList.contains('file-list')) && onFileSelect) {
+      onFileSelect(null);
+    }
+  }, [onFileSelect]);
+
+  const handleFileClick = useCallback((file: FileRecord, e: React.MouseEvent) => {
+    // Select file on single click
+    e.stopPropagation(); // Prevent container click from clearing selection
+    if (onFileSelect) {
+      onFileSelect(file.file_id);
+    }
+    // Don't prevent default - allow double-click to still work
+  }, [onFileSelect]);
+
+  const handleFolderClickWrapper = useCallback((folder: FolderRecord, e: React.MouseEvent) => {
+    // Clear selection when clicking a folder
+    e.stopPropagation(); // Prevent container click
+    if (onFileSelect) {
+      onFileSelect(null);
+    }
+    onFolderClick(folder);
+  }, [onFileSelect, onFolderClick]);
+
   return (
-    <div className="file-list-container">
+    <div className="file-list-container" onClick={handleContainerClick}>
       {/* Breadcrumb / Navigate Up */}
       {currentPath !== null && (
         <div className="breadcrumb">
@@ -101,13 +145,13 @@ export function FileBrowser({
             : 'This folder is empty.'}
         </div>
       ) : (
-        <div className="file-list">
+        <div className="file-list" onClick={handleContainerClick}>
           {/* Folders first */}
           {folders.map((folder) => (
             <div
               key={folder.folder_id}
               className="file-item folder-item"
-              onClick={() => onFolderClick(folder)}
+              onClick={(e) => handleFolderClickWrapper(folder, e)}
               onDoubleClick={() => handleFolderDoubleClick(folder)}
               title={`${folder.path}\n${folder.item_count} items`}
             >
@@ -130,7 +174,9 @@ export function FileBrowser({
           {files.map((file) => (
             <div
               key={file.file_id}
-              className="file-item"
+              className={`file-item ${selectedFileId === file.file_id ? 'selected' : ''}`}
+              ref={selectedFileId === file.file_id ? selectedFileRef : null}
+              onClick={(e) => handleFileClick(file, e)}
               onDoubleClick={() => handleFileDoubleClick(file)}
               onContextMenu={(e) => handleFileRightClick(file, e)}
               title={`${file.path}\nRight-click to view extracted content`}

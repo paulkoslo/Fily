@@ -76,6 +76,35 @@ declare global {
     error?: string;
   }
 
+  interface SmartSearchFilesRequest {
+    query: string;
+    sourceId?: number;
+    limit?: number;
+  }
+
+  interface SmartSearchResult {
+    file_id: string;
+    name: string;
+    path: string;
+    relative_path: string | null;
+    parent_path: string | null;
+    extension: string;
+    size: number;
+    mtime: number;
+    source_id: number;
+    match_type: 'filename' | 'summary' | 'tags';
+    match_score: number;
+    summary: string | null;
+    tags?: string[];
+    virtual_path: string | null;
+  }
+
+  interface SmartSearchFilesResponse {
+    success: boolean;
+    results: SmartSearchResult[];
+    error?: string;
+  }
+
   interface ListFoldersRequest {
     sourceId: number;
     parentPath?: string | null;
@@ -373,6 +402,7 @@ declare global {
     scanSource: (request: ScanSourceRequest) => Promise<ScanSourceResponse>;
     onScanProgress: (callback: (progress: ScanProgress) => void) => () => void;
     listFiles: (request: ListFilesRequest) => Promise<ListFilesResponse>;
+    smartSearchFiles: (request: SmartSearchFilesRequest) => Promise<SmartSearchFilesResponse>;
     listFolders: (request: ListFoldersRequest) => Promise<ListFoldersResponse>;
     getFolderTree: (request: ListFoldersRequest) => Promise<GetFolderTreeResponse>;
     openFile: (request: OpenFileRequest) => Promise<OpenFileResponse>;
