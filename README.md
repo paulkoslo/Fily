@@ -1,5 +1,7 @@
 # fily, AI powered file management v1.1.1
 
+![Fily Application Screenshot](./assets/fily-app-screenshot.png)
+
 A local-first macOS desktop application that creates an intelligent, AI-organized virtual file browser. Fily indexes your files and presents them in a smart virtual folder structure without moving, renaming, or deleting your original files. **Now capable of processing thousands of files efficiently** with optimized worker pools, parallel processing, and cost-effective AI integration.
 
 ## Overview
