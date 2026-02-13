@@ -1241,7 +1241,7 @@ export function registerIpcHandlers(
       };
 
       try {
-        const req = (request || {}) as { sourceId?: number };
+        const req = (request || {}) as { sourceId?: number; skipOptimization?: boolean };
         if (typeof req.sourceId !== 'number') {
           return {
             success: false,
@@ -1251,6 +1251,7 @@ export function registerIpcHandlers(
         }
 
         const { sourceId } = req;
+        const skipOptimization = req.skipOptimization === true;
 
         emitProgress({
           status: 'planning',
@@ -1314,7 +1315,7 @@ export function registerIpcHandlers(
         };
 
         const planner = new TaxonomyPlanner(db, undefined, workerPool, plannerProgress);
-        const outputs: PlannerOutput[] = await planner.plan(files);
+        const outputs: PlannerOutput[] = await planner.plan(files, { skipOptimization });
 
         console.log(
           `[TaxonomyPlanner] Organized ${outputs.length.toLocaleString()} files using ${planner.id} v${planner.version}`

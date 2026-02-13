@@ -1,7 +1,9 @@
-# AGENTS.md - Fily Architecture Vision
+# AGENTS.md - Fily Architecture Vision (v1.1.1)
 
 > **This document describes the VISION and ARCHITECTURE for AI integration.**  
 > For the current implementation status, see [README.md](./README.md).
+>
+> **v1.1.1 Highlights**: Production-ready architecture optimized for processing **thousands of files** efficiently with modular agents, parallel processing, and centralized configuration.
 
 ## Overview
 
@@ -74,22 +76,53 @@ export class LLMClient {
 
 ### Implemented Agents
 
-The application uses provider-agnostic agents for content understanding:
+The application uses provider-agnostic agents organized in modular folder structures:
 
-1. **SummaryAgent** (`packages/core/src/agents/summary-agent.ts`)
-   - Generates intelligent summaries from extracted file content
-   - Handles different file types (PDF, DOCX, images, audio, etc.)
+1. **SummaryTagAgent** (`packages/core/src/agents/summary-tag-agent/`)
+   - **Combined agent** that generates both summaries AND tags in a single API call
+   - Reduces API calls by ~97.5% while maintaining quality
+   - Modular structure:
+     - `index.ts` - Main orchestrator (processBatch, processSingle)
+     - `batch-processor.ts` - Vision/text batch processing via WorkerPool
+     - `file-processor.ts` - Individual file processing (fallback)
+     - `parsers.ts` - LLM response parsing
+     - `helpers.ts` - File grouping, validation, content truncation
+     - `tag-enricher.ts` - Tag enrichment from paths/metadata
+     - `fallback.ts` - Fallback result generation
+     - `prompt-builders.ts` - Batch prompt construction
+     - `types.ts` - FileProcessingInput, FileProcessingResult
+   - Processes files in parallel batches (vision: 5 per batch, text: 20 per batch)
    - Uses LLMClient for provider-agnostic API calls
 
-2. **TagAgent** (`packages/core/src/agents/tag-agent.ts`)
-   - Generates relevant tags for files based on content and metadata
-   - Produces structured tag arrays for better searchability
-   - Uses LLMClient for provider-agnostic API calls
-
-3. **TaxonomyAgent** (`packages/core/src/agents/taxonomy-agent.ts`)
+2. **TaxonomyAgent** (`packages/core/src/agents/taxonomy-agent/`)
    - Designs virtual folder taxonomies based on file collections
    - Generates mapping rules for file placement
+   - Supports single-pass and hierarchical multi-level generation
+   - Modular structure:
+     - `index.ts` - Main orchestrator (generatePlan, generateTopLevelPlan, generateSubLevelPlan)
+     - `parsers.ts` - Taxonomy plan parsing (repairJson, normalizeFolderPath)
+     - `trivial-plan.ts` - Fallback plan builder (when LLM unavailable)
+   - All LLM calls go through WorkerPool for parallel processing
+   - Used by TaxonomyOrchestrator for hierarchical taxonomy generation
+
+3. **ValidationAgent** (`packages/core/src/agents/validation-agent/`)
+   - Validates LLM-generated taxonomy plans and fixes logical errors
+   - Detects generic folder names, broken references, structural issues
+   - Modular structure:
+     - `index.ts` - Main orchestrator (validatePlan, applyCorrections)
+     - `parsers.ts` - Validation result parsing
+   - Flags files needing optimization
    - Uses LLMClient for provider-agnostic API calls
+
+4. **OptimizerAgent** (`packages/core/src/agents/optimizer-agent/`)
+   - Re-evaluates files with low confidence scores (< 50%)
+   - Can create new folders when files don't fit existing structure
+   - Modular structure:
+     - `index.ts` - Main orchestrator (optimizePlacements, processBatch)
+     - `parsers.ts` - Optimization response parsing
+     - `types.ts` - OptimizerResult, OptimizerNewFolder
+   - Processes files in batches (25 per batch) via WorkerPool
+   - Returns improved placements + optional new folders
 
 ### Implemented Planners
 
@@ -122,14 +155,16 @@ All extracted content is stored in SQLite and used by agents for summarization a
 The extraction and AI processing pipeline has been optimized for large-scale file processing:
 
 **Worker Pool Architecture:**
-- **50 Concurrent Workers**: Worker pool manages concurrent batch processing
+- **80 Concurrent Workers**: Worker pool manages concurrent batch processing (configurable via WORKER_POOL_DEFAULT_MAX_WORKERS)
 - **Concurrent Batch Submission**: All batches submitted immediately to worker pool, processed as workers become available
 - **No Idle Time**: Workers continuously process batches from queue, maximizing throughput
-- **Race Condition Fixed**: Atomic batch submission prevents underutilization
+- **Parallel Processing**: Subfolder generation, optimizer batches, and validation all use WorkerPool for parallel execution
+- **All Constants Centralized**: Configuration values in `packages/core/src/planner/constants.ts` for easy adjustment
 
 **Efficient Batching Strategy:**
-- **Vision Files**: 3 images per batch (due to large base64 image size)
-- **Text Files**: 10 files per batch (optimal token usage)
+- **Vision Files**: 5 images per batch (SUMMARY_TAG_VISION_BATCH_SIZE) - optimized for base64 image size
+- **Text Files**: 20 files per batch (SUMMARY_TAG_TEXT_BATCH_SIZE) - optimal token usage
+- **Optimizer**: 25 files per batch (OPTIMIZER_BATCH_SIZE) - efficient re-evaluation
 - **Lazy Image Loading**: Images loaded only when needed (right before API calls), minimizing memory usage
 - **Batch Plans Created Upfront**: Lightweight batch planning before submission
 
@@ -351,13 +386,19 @@ type Result<T> = { success: true; data: T } | { success: false; error: string };
 | `indexer/` | Crawl directories, compute file_id, manage file records |
 | `extractors/` | Content extraction from various file types (PDF, DOCX, images, audio, etc.) |
 | `extractors/content-service.ts` | Orchestrates extraction pipeline with worker pool for concurrent processing |
-| `agents/` | AI agents (SummaryTagAgent, TaxonomyAgent) using LLMClient |
-| `agents/worker-pool.ts` | **Worker pool** for concurrent batch processing (50 workers) |
-| `agents/summary-tag-agent.ts` | **SummaryTagAgent** - generates summaries and tags in batched API calls |
+| `agents/` | AI agents organized in modular folder structures |
+| `agents/worker-pool.ts` | **Worker pool** for concurrent batch processing (80 workers, configurable) |
 | `agents/llm-client.ts` | Unified LLM abstraction (OpenRouter, OpenAI) with model selection |
-| `agents/prompts/` | Prompt templates for AI agents |
+| `agents/api-call-helper.ts` | Helper for executing LLM API calls with timeout/error handling |
+| `agents/summary-tag-agent/` | **SummaryTagAgent** - modular structure (batch-processor, file-processor, parsers, helpers, etc.) |
+| `agents/taxonomy-agent/` | **TaxonomyAgent** - modular structure (parsers, trivial-plan) |
+| `agents/validation-agent/` | **ValidationAgent** - modular structure (parsers) |
+| `agents/optimizer-agent/` | **OptimizerAgent** - modular structure (parsers, types) |
+| `agents/prompts/` | Prompt templates for all agents |
 | `planner/` | Interface + implementations for virtual placement decisions |
-| `planner/taxonomy-*` | Taxonomy-driven planner implementation (TaxonomyPlanner, TaxonomyAgent, TaxonomyOverview) |
+| `planner/constants.ts` | **Centralized configuration** - all thresholds, batch sizes, timeouts in one place |
+| `planner/taxonomy-*` | Taxonomy-driven planner implementation (TaxonomyPlanner, TaxonomyOrchestrator, TaxonomyOverview) |
+| `planner/taxonomy-rule-matcher.ts` | Shared rule matching logic (findBestRule, calculateRuleSpecificity) |
 | `virtual-tree/` | Build hierarchical tree from flat planner outputs |
 | `ipc/` | Zod schemas and types for all IPC contracts |
 
@@ -386,7 +427,19 @@ type Result<T> = { success: true; data: T } | { success: false; error: string };
 | 2 | Virtual folder tree UI (hierarchical view) | ✅ **Complete** |
 | 3 | Content extraction pipeline (text preview, summaries, tags) | ✅ **Complete** |
 | 4 | **AI planner integration (TaxonomyPlanner)** | ✅ **Complete** |
-| 5 | Feedback loop, user rules, quality improvements | 📋 Planned |
+| 5 | **Production Readiness & Code Quality** | ✅ **Complete** (v1.1.1) |
+| | - ✅ Modular agent architecture (all agents split into organized folders) |
+| | - ✅ Centralized constants (all configuration in constants.ts) |
+| | - ✅ Parallel processing (subfolder generation, optimizer via WorkerPool) |
+| | - ✅ Optimizer folder creation (can create new folders when needed) |
+| | - ✅ Validation agent (validates plans and fixes errors) |
+| | - ✅ Comprehensive error handling and fallbacks |
+| | - ✅ Worker pool optimizations (80 concurrent workers) |
+| | - ✅ Large-scale file processing (thousands of files efficiently) |
+| | - ✅ Cost-efficient processing (few dollars for thousands of files) |
+| | - ✅ Operation cancellation and time limits |
+| | - ✅ Path validation and security improvements |
+| | - ✅ Enhanced progress tracking and user feedback |
 | 6 | **Local LLM integration (llama-fs)** | 📋 Future |
 
 ### Phase 4 Details (AI Integration) ✅ **IMPLEMENTED**
@@ -397,26 +450,40 @@ The `TaxonomyPlanner` is now the default planner, using `LLMClient` for provider
 // packages/core/src/planner/taxonomy-planner.ts
 class TaxonomyPlanner implements Planner {
   async plan(files: FileRecord[]): Promise<PlannerOutput[]> {
-    // 1. Build FileCard[] from DB (includes summaries and tags from SummaryAgent/TagAgent)
-    // 2. Build TaxonomyOverview (aggregate stats: extensions, years, tags, path patterns)
-    // 3. Call TaxonomyAgent.generatePlan() to get TaxonomyPlan (folders + rules)
-    // 4. Apply rules deterministically to produce PlannerOutput[]
-    // 5. Store in virtual_placements table
+    // 1. Build FileCard[] from DB (includes summaries and tags from SummaryTagAgent)
+    // 2. Choose strategy by file count (single vs hierarchical)
+    // 3. Generate TaxonomyPlan (single-pass or hierarchical via TaxonomyOrchestrator)
+    // 4. Repair rule→folder references (fixes LLM typos/case mismatches)
+    // 5. Validate plan with ValidationAgent and apply corrections
+    // 6. Apply plan deterministically to produce PlannerOutput[]
+    // 7. Optimize low-confidence files with OptimizerAgent (can create new folders)
+    // 8. Return final PlannerOutput[]
   }
 }
 ```
 
 **Key Components:**
 - `LLMClient`: Unified abstraction for OpenRouter and OpenAI APIs
-- `TaxonomyAgent`: LLM agent that designs virtual folder hierarchies
+- `SummaryTagAgent`: Combined agent generating summaries + tags in single API call
+- `TaxonomyAgent`: LLM agent that designs virtual folder hierarchies (modular structure)
+- `TaxonomyOrchestrator`: Handles hierarchical multi-pass taxonomy generation (parallel subfolders)
+- `ValidationAgent`: Validates plans and fixes logical errors
+- `OptimizerAgent`: Re-evaluates low-confidence placements, can create new folders
 - `TaxonomyOverview`: Aggregated file statistics for taxonomy design
 - `TaxonomyPlan`: Structure defining folders and placement rules
-- `TaxonomyPlanner`: Orchestrates the planning process
+- `TaxonomyPlanner`: Orchestrates the entire planning process
+- `TaxonomyStrategy`: Adaptive strategy selection based on file count
+- `constants.ts`: Centralized configuration for all thresholds and parameters
 
 **Provider Selection:**
 - Users can select OpenRouter or OpenAI in Settings
 - OpenRouter supports multiple models (GPT-5, Grok, DeepSeek)
 - Model selection persisted in user's .env file
+
+**Modular Architecture:**
+- All agents split into organized folders with clear separation of concerns
+- Each agent folder contains: index.ts (main orchestrator), parsers.ts, types.ts, helpers as needed
+- See [AGENTIC_FLOW.md](./AGENTIC_FLOW.md) for complete workflow visualization
 
 ### Phase 6 Details (Future: Local LLM Integration)
 
@@ -443,18 +510,23 @@ class LlamaFSPlanner implements Planner {
 | File | Purpose |
 |------|---------|
 | `packages/core/src/agents/llm-client.ts` | ✅ **LLMClient** - Unified LLM abstraction (OpenRouter, OpenAI) |
-| `packages/core/src/agents/worker-pool.ts` | ✅ **WorkerPool** - Concurrent batch processing (50 workers) |
-| `packages/core/src/agents/summary-tag-agent.ts` | ✅ **SummaryTagAgent** - Generates summaries and tags in batched API calls |
-| `packages/core/src/agents/taxonomy-agent.ts` | Taxonomy design agent |
-| `packages/core/src/agents/api-call-helper.ts` | Helper for executing LLM API calls with fallback |
+| `packages/core/src/agents/worker-pool.ts` | ✅ **WorkerPool** - Concurrent batch processing (80 workers, configurable) |
+| `packages/core/src/agents/api-call-helper.ts` | Helper for executing LLM API calls with timeout/error handling |
+| `packages/core/src/agents/summary-tag-agent/` | ✅ **SummaryTagAgent** - Modular structure (9 files: index, batch-processor, file-processor, parsers, helpers, tag-enricher, fallback, prompt-builders, types) |
+| `packages/core/src/agents/taxonomy-agent/` | ✅ **TaxonomyAgent** - Modular structure (index, parsers, trivial-plan) |
+| `packages/core/src/agents/validation-agent/` | ✅ **ValidationAgent** - Modular structure (index, parsers) |
+| `packages/core/src/agents/optimizer-agent/` | ✅ **OptimizerAgent** - Modular structure (index, parsers, types) |
 | `packages/core/src/agents/prompts/` | Prompt templates for all agents |
 | `packages/core/src/extractors/content-service.ts` | ✅ **ContentService** - Orchestrates extraction with concurrent batch processing |
 | `packages/core/src/planner/index.ts` | Planner interface definition |
+| `packages/core/src/planner/constants.ts` | ✅ **Centralized Configuration** - All thresholds, batch sizes, timeouts |
 | `packages/core/src/planner/stub-planner.ts` | Rule-based reference implementation |
-| `packages/core/src/planner/taxonomy-planner.ts` | ✅ **Active AI planner** |
-| `packages/core/src/planner/taxonomy-agent.ts` | LLM agent for taxonomy generation |
+| `packages/core/src/planner/taxonomy-planner.ts` | ✅ **Active AI planner** - Orchestrates taxonomy generation |
+| `packages/core/src/planner/taxonomy-orchestrator.ts` | ✅ **Hierarchical orchestrator** - Parallel subfolder generation |
+| `packages/core/src/planner/taxonomy-rule-matcher.ts` | ✅ **Shared rule matching** - findBestRule, calculateRuleSpecificity |
 | `packages/core/src/planner/taxonomy-overview.ts` | File statistics aggregation |
 | `packages/core/src/planner/taxonomy-types.ts` | Type definitions for taxonomy plans |
+| `packages/core/src/planner/taxonomy-strategy.ts` | Adaptive strategy selection based on file count |
 | `packages/core/src/extractors/` | Content extraction from various file types |
 | `packages/core/src/ipc/contracts.ts` | `PlannerOutput`, `FileCard`, API key schemas |
 | `packages/core/src/db/migrations.ts` | `virtual_placements` table |
@@ -484,28 +556,36 @@ See [README.md](./README.md) for full installation instructions.
 
 ## Current Status Summary
 
-✅ **Implemented:**
+✅ **Implemented (v1.1.1):**
 - Full content extraction pipeline (PDF, DOCX, images, audio, etc.)
-- **Optimized worker pool** with concurrent batch processing (50 workers)
+- **Optimized worker pool** with concurrent batch processing (80 workers, configurable)
 - **Concurrent batch submission** - all batches submitted immediately, processed as workers become available
-- **Efficient batching** - vision files (3 per batch), text files (10 per batch)
+- **Efficient batching** - vision files (5 per batch), text files (20 per batch), optimizer (25 per batch)
 - **Lazy image loading** - images loaded only when needed, minimizing memory usage
-- AI-powered summarization and tagging (SummaryTagAgent)
-- Taxonomy-driven virtual organization (TaxonomyPlanner)
-- Optimizer for low-confidence placements
+- **Modular agent architecture** - all agents split into organized folders with clear separation
+- **Centralized constants** - all configuration in `constants.ts` for easy adjustment (DRY principle)
+- **Parallel subfolder generation** - hierarchical taxonomy uses WorkerPool for parallel processing
+- **Optimizer folder creation** - optimizer can create new folders when files don't fit existing structure
+- **Validation agent** - validates plans and fixes logical errors before file placement
+- **Large-scale processing** - optimized architecture enables efficient processing of **thousands of files**
+- AI-powered summarization and tagging (SummaryTagAgent - combined agent)
+- Taxonomy-driven virtual organization (TaxonomyPlanner with adaptive strategies)
+- Optimizer for low-confidence placements (< 50% confidence threshold)
 - Virtual tree UI with expand/collapse and navigation
 - Watch mode for automatic file indexing
 - Search across files, content, and tags
 - File card view and full content viewer
-- Progress tracking for all operations (4-step pipeline)
+- Progress tracking for all operations
 - Warning dialogs for destructive operations
 - **Multi-provider LLM support** (OpenRouter + OpenAI)
 - **In-app API key configuration** with provider selection
 - **Model selection** (GPT-5 Nano/Mini, Grok 4.1 Fast, DeepSeek V3.2)
 - **API key prompt** when using AI features without a key configured
-- **Cost-efficient processing** - can process thousands of files for just a few dollars in API costs
+- **Cost-efficient processing** - can process **thousands of files** for just a few dollars in API costs
+- **Comprehensive error handling** - fallback results ensure pipeline never stops
+- **Adaptive taxonomy complexity** - scales with file count (single-pass vs hierarchical)
 
-📋 **Planned:**
+📋 **Planned (Phase 6):**
 - User feedback loop for improving AI organization
 - Custom rules and overrides
 - Quality metrics and confidence thresholds

@@ -1,39 +1,47 @@
-import type { TaxonomyPlan } from '../planner/taxonomy-types';
-import type { FileCard, PlannerOutput } from '../ipc/contracts';
+/**
+ * OptimizerAgent - Main Orchestrator
+ * 
+ * Re-evaluates files with low confidence scores and suggests better placements.
+ * Can create new folders when files don't fit well in existing taxonomy structure.
+ * 
+ * Workflow Context:
+ * - optimizePlacements(): Main entry point - processes low-confidence files in batches
+ * - Called by: TaxonomyPlanner (after initial taxonomy generation)
+ * - Input: Files with confidence < OPTIMIZER_CONFIDENCE_THRESHOLD (default: 50%)
+ * - Output: Improved placements + optional new folders → merged back into PlannerOutput[]
+ * - Processes batches in parallel via WorkerPool
+ * 
+ * This agent fine-tunes the taxonomy by improving placements and creating missing folders.
+ */
+import type { TaxonomyPlan } from '../../planner/taxonomy-types';
+import type { FileCard, PlannerOutput } from '../../ipc/contracts';
 import {
   OPTIMIZER_AGENT_SYSTEM_PROMPT,
   buildOptimizerPrompt,
   type OptimizerBatchInput,
-} from './prompts/optimizer-agent-prompt';
-import type { WorkerPool } from './worker-pool';
-import { executeApiCall } from './api-call-helper';
-import { createLLMClient, type LLMClient } from './llm-client';
-
-/**
- * Result from optimizer batch processing
- */
-export interface OptimizerResult {
-  fileId: string;
-  virtualPath: string;
-  confidence: number;
-  reason: string;
-}
+} from '../prompts/optimizer-agent-prompt';
+import type { WorkerPool } from '../worker-pool';
+import { executeApiCall } from '../api-call-helper';
+import { createLLMClient, type LLMClient } from '../llm-client';
+import { OPTIMIZER_BATCH_SIZE, OPTIMIZER_CONFIDENCE_THRESHOLD } from '../../planner/constants';
+import type { OptimizerResult, OptimizerNewFolder } from './types';
+import { parseOptimizationResponse } from './parsers';
 
 /**
  * Optimizer Agent
  * 
- * Re-evaluates files with low confidence scores (<70%) and suggests better placements
- * within the existing taxonomy structure.
+ * Re-evaluates files with low confidence scores (<OPTIMIZER_CONFIDENCE_THRESHOLD) and suggests better placements.
+ * Can create new folders when files don't fit well in existing structure.
  * 
  * Features:
  * - Processes files in batches through WorkerPool
- * - Uses existing taxonomy plan (doesn't create new folders)
+ * - Can create new folders when needed (if files don't fit existing structure)
  * - Provides improved confidence scores and reasoning
  */
 export class OptimizerAgent {
   private llmClient: LLMClient | null;
   private workerPool: WorkerPool | null;
-  private batchSize: number = 10; // Process 10 files per batch
+  private batchSize: number = OPTIMIZER_BATCH_SIZE;
 
   constructor(workerPool?: WorkerPool) {
     this.llmClient = createLLMClient();
@@ -50,9 +58,9 @@ export class OptimizerAgent {
    * Optimize placements for files with low confidence
    * 
    * @param plan - The taxonomy plan that was already created
-   * @param lowConfidenceFiles - Files with confidence < 0.7 and their current placements
+   * @param lowConfidenceFiles - Files with confidence < OPTIMIZER_CONFIDENCE_THRESHOLD and their current placements
    * @param onProgress - Optional progress callback
-   * @returns Optimized placements for the files
+   * @returns Optimized placements for the files and any new folders created
    */
   async optimizePlacements(
     plan: TaxonomyPlan,
@@ -61,9 +69,9 @@ export class OptimizerAgent {
       currentPlacement: PlannerOutput;
     }[],
     onProgress?: (message: string) => void
-  ): Promise<OptimizerResult[]> {
+  ): Promise<{ optimizations: OptimizerResult[]; newFolders: OptimizerNewFolder[] }> {
     if (!this.llmClient || lowConfidenceFiles.length === 0) {
-      return [];
+      return { optimizations: [], newFolders: [] };
     }
 
     // Split into batches
@@ -106,15 +114,28 @@ export class OptimizerAgent {
 
     const batchResults = await Promise.all(batchPromises);
 
-    // Flatten results
+    // Flatten results and collect new folders
     const results: OptimizerResult[] = [];
+    const newFoldersMap = new Map<string, OptimizerNewFolder>();
+    
     for (const batchResult of batchResults) {
-      results.push(...batchResult);
+      results.push(...batchResult.optimizations);
+      // Collect unique new folders (by path)
+      for (const folder of batchResult.newFolders) {
+        if (!newFoldersMap.has(folder.path)) {
+          newFoldersMap.set(folder.path, folder);
+        }
+      }
     }
 
+    const newFolders = Array.from(newFoldersMap.values());
+    
+    if (newFolders.length > 0) {
+      onProgress?.(`Optimizer: Created ${newFolders.length} new folder(s) for better organization`);
+    }
     onProgress?.(`Optimizer: Finished optimizing ${results.length} file placements`);
 
-    return results;
+    return { optimizations: results, newFolders };
   }
 
   /**
@@ -123,9 +144,9 @@ export class OptimizerAgent {
   private async processBatch(
     plan: TaxonomyPlan,
     batch: OptimizerBatchInput
-  ): Promise<OptimizerResult[]> {
+  ): Promise<{ optimizations: OptimizerResult[]; newFolders: OptimizerNewFolder[] }> {
     if (!this.llmClient) {
-      return [];
+      return { optimizations: [], newFolders: [] };
     }
 
     const system = OPTIMIZER_AGENT_SYSTEM_PROMPT;
@@ -148,7 +169,7 @@ export class OptimizerAgent {
     const fallback = () => {
       // Return current placements as-is if optimization fails
       console.warn(`[OptimizerAgent] Using fallback for batch with ${batch.fileCards.length} files`);
-      return { optimizations: fallbackOptimizations };
+      return { optimizations: fallbackOptimizations, newFolders: [] };
     };
 
     const messages = [
@@ -157,7 +178,7 @@ export class OptimizerAgent {
     ];
 
     try {
-      const result = await executeApiCall<string | { optimizations: OptimizerResult[] }>(
+      const result = await executeApiCall<string | { optimizations: OptimizerResult[]; newFolders?: OptimizerNewFolder[] }>(
         messages,
         fallback,
         this.workerPool,
@@ -167,82 +188,41 @@ export class OptimizerAgent {
       if (typeof result !== 'string') {
         // Already parsed as object (shouldn't happen with current implementation, but handle it)
         console.log(`[OptimizerAgent] Received object result with ${result.optimizations?.length || 0} optimizations`);
-        return result.optimizations || fallbackOptimizations;
+        return {
+          optimizations: result.optimizations || fallbackOptimizations,
+          newFolders: result.newFolders || [],
+        };
       }
 
       const raw = result.trim();
       if (!raw) {
         console.warn('[OptimizerAgent] Model returned empty content – using current placements');
         console.warn(`[OptimizerAgent] Raw result type: ${typeof result}, length: ${result?.length || 0}`);
-        return fallbackOptimizations;
+        return { optimizations: fallbackOptimizations, newFolders: [] };
       }
 
       console.log(`[OptimizerAgent] Received response (${raw.length} chars), first 200 chars: ${raw.slice(0, 200)}`);
 
-      const parsed = this.parseOptimizationResponse(raw);
+      const parsed = parseOptimizationResponse(raw);
       if (!parsed) {
         console.warn(
           '[OptimizerAgent] Failed to parse model response – using current placements.\n' +
             `First 500 chars of response:\n${raw.slice(0, 500)}`
         );
-        return fallbackOptimizations;
+        return { optimizations: fallbackOptimizations, newFolders: [] };
       }
 
-      console.log(`[OptimizerAgent] Successfully parsed ${parsed.optimizations.length} optimizations`);
-      return parsed.optimizations || fallbackOptimizations;
+      console.log(`[OptimizerAgent] Successfully parsed ${parsed.optimizations.length} optimizations and ${parsed.newFolders?.length || 0} new folders`);
+      return {
+        optimizations: parsed.optimizations || fallbackOptimizations,
+        newFolders: parsed.newFolders || [],
+      };
     } catch (error) {
       console.error('[OptimizerAgent] Error during batch processing:', error);
-      return fallbackOptimizations;
-    }
-  }
-
-  /**
-   * Parse optimizer response from LLM
-   */
-  private parseOptimizationResponse(
-    content: string
-  ): { optimizations: OptimizerResult[] } | null {
-    if (!content) return null;
-
-    let jsonText = content.trim();
-
-    // Strip markdown code fences if present
-    if (jsonText.startsWith('```')) {
-      jsonText = jsonText.replace(/^```[a-zA-Z]*\s*/u, '');
-      jsonText = jsonText.replace(/```$/u, '').trim();
-    }
-
-    // Find first "{" and last "}" to isolate JSON object
-    const firstBrace = jsonText.indexOf('{');
-    const lastBrace = jsonText.lastIndexOf('}');
-    if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
-      console.warn('[OptimizerAgent] Could not find JSON object braces in model response');
-      return null;
-    }
-    jsonText = jsonText.slice(firstBrace, lastBrace + 1);
-
-    try {
-      const value = JSON.parse(jsonText) as any;
-      if (!value || typeof value !== 'object') return null;
-
-      const optimizations = Array.isArray(value.optimizations) ? value.optimizations : [];
-
-      const parsed: { optimizations: OptimizerResult[] } = {
-        optimizations: optimizations.map((opt: any) => ({
-          fileId: String(opt.fileId),
-          virtualPath: String(opt.virtualPath),
-          confidence:
-            typeof opt.confidence === 'number'
-              ? Math.max(0, Math.min(1, opt.confidence))
-              : 0.5,
-          reason: String(opt.reason ?? 'Optimized placement'),
-        })),
-      };
-
-      return parsed;
-    } catch (error) {
-      console.error('[OptimizerAgent] JSON parse error:', error);
-      return null;
+      return { optimizations: fallbackOptimizations, newFolders: [] };
     }
   }
 }
+
+// Re-export types for convenience
+export type { OptimizerResult, OptimizerNewFolder } from './types';

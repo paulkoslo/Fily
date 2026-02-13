@@ -1,8 +1,7 @@
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import type { WorkerPool } from './worker-pool';
 import type { LLMClient } from './llm-client';
-
-const DEFAULT_MAX_COMPLETION_TOKENS = 5000;
+import { API_DEFAULT_MAX_TOKENS, API_DEFAULT_TIMEOUT_MS } from '../planner/constants';
 
 /**
  * Execute a chat completion request using the LLM client and shared worker pool.
@@ -27,7 +26,7 @@ export async function executeApiCall<T>(
   }
 
   const reason = options?.reason || 'API call';
-  const timeoutMs = options?.timeoutMs ?? 180000; // Default: 3 minutes
+  const timeoutMs = options?.timeoutMs ?? API_DEFAULT_TIMEOUT_MS;
 
   // Log why we're making this API call
   console.log(`[API Call] ${reason}`);
@@ -47,7 +46,7 @@ export async function executeApiCall<T>(
       const content = await Promise.race([
         llmClient.chatCompletion(messages, {
           model: options?.model,
-          maxTokens: options?.maxTokens ?? DEFAULT_MAX_COMPLETION_TOKENS,
+          maxTokens: options?.maxTokens ?? API_DEFAULT_MAX_TOKENS,
         }),
         timeoutPromise,
       ]) as string;

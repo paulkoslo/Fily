@@ -783,7 +783,7 @@ function App() {
     }
   }, [selectedSourceId, isExtracting, apiKeyStatus]);
 
-  const handleOrganize = useCallback(async () => {
+  const handleOrganize = useCallback(async (skipOptimization: boolean = false) => {
     if (!selectedSourceId || isOrganizing) return;
 
     // Check if an API key is configured
@@ -831,6 +831,7 @@ function App() {
 
       const response = await window.api.runPlanner({
         sourceId: selectedSourceId,
+        skipOptimization, // Skip optimization only when called from "Organize (AI Taxonomy) only"
       });
 
       if (!response.success) {
@@ -1225,7 +1226,7 @@ function App() {
                   <button
                     onClick={async () => {
                       setIsManualMenuOpen(false);
-                      await handleOrganize();
+                      await handleOrganize(true); // Skip optimization for "Organize (AI Taxonomy) only"
                     }}
                     disabled={
                       selectedSourceId === null ||

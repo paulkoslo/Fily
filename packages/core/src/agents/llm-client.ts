@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import { API_DEFAULT_MAX_TOKENS } from '../planner/constants';
 
 /**
  * LLM Provider configuration
@@ -140,7 +141,7 @@ export class LLMClient {
       const response = await this.client.chat.completions.create({
         model: modelToUse,
         messages,
-        max_completion_tokens: options?.maxTokens ?? 5000,
+        max_completion_tokens: options?.maxTokens ?? API_DEFAULT_MAX_TOKENS,
         temperature: options?.temperature,
       });
 

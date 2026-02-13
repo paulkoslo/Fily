@@ -1,13 +1,14 @@
-# fily, AI powered file management v1.0
+# fily, AI powered file management v1.1.1
 
-A local-first macOS desktop application that creates an intelligent, AI-organized virtual file browser. Fily indexes your files and presents them in a smart virtual folder structure without moving, renaming, or deleting your original files.
+A local-first macOS desktop application that creates an intelligent, AI-organized virtual file browser. Fily indexes your files and presents them in a smart virtual folder structure without moving, renaming, or deleting your original files. **Now capable of processing thousands of files efficiently** with optimized worker pools, parallel processing, and cost-effective AI integration.
 
 ## Overview
 
-Fily solves the problem of disorganized files scattered across your system. Instead of manually organizing thousands of files, Fily uses AI to understand your content and automatically creates a virtual organization system. Your files stay exactly where they are—Fily simply provides a smarter way to find and browse them.
+Fily solves the problem of disorganized files scattered across your system. Instead of manually organizing thousands of files, Fily uses AI to understand your content and automatically creates a virtual organization system. **With v1.1.1, Fily can efficiently process thousands of files** using optimized worker pools, parallel batch processing, and modular agent architecture. Your files stay exactly where they are—Fily simply provides a smarter way to find and browse them.
 
 ### Key Features
 
+- **Large-Scale Processing**: Optimized for processing **thousands of files** efficiently with 80 concurrent workers and parallel batch processing
 - **Virtual Organization**: AI-powered virtual folder structure that organizes files by content, context, and meaning
 - **Non-Destructive**: Files are never moved, renamed, or deleted—your originals remain untouched
 - **Multiple Source Folders**: Index and organize files from multiple directories simultaneously
@@ -17,6 +18,7 @@ Fily solves the problem of disorganized files scattered across your system. Inst
 - **Fast Search**: Search across all indexed files by name, content, tags, or metadata
 - **Native Integration**: Opens files with your default macOS applications
 - **Local-First**: All data stored locally in SQLite—your files and metadata never leave your machine
+- **Cost-Efficient**: Process thousands of files for just a few dollars in API costs
 
 ## Installation
 
@@ -125,7 +127,7 @@ Fily operates in four main stages:
 
 1. **Index**: Crawls your source directories, extracts file metadata, and stores everything in a local SQLite database
 2. **Extract Raw Content**: Extracts raw content from files using specialized extractors for PDFs, documents, images, audio, and more
-3. **AI Processing**: Uses AI agents to generate summaries and tags in concurrent batches (utilizing 50 workers)
+3. **AI Processing**: Uses AI agents to generate summaries and tags in concurrent batches (utilizing 80 workers for parallel processing)
 4. **Organize**: Creates virtual folder placements using taxonomy generation and optimization
 5. **Browse**: Presents files in an intelligent virtual folder tree while preserving your original file structure
 
@@ -161,7 +163,13 @@ Fily/
 │           ├── db/       # SQLite database (better-sqlite3)
 │           ├── indexer/  # File crawler and watcher
 │           ├── extractors/  # Content extraction pipeline
-│           ├── agents/   # AI agents (summary, tagging, taxonomy)
+│           ├── agents/   # AI agents (modular folder structure)
+│           │   ├── summary-tag-agent/  # Summary + tag generation
+│           │   ├── taxonomy-agent/     # Taxonomy design
+│           │   ├── validation-agent/  # Plan validation
+│           │   ├── optimizer-agent/    # Placement optimization
+│           │   ├── worker-pool.ts      # Concurrent processing
+│           │   └── llm-client.ts       # LLM abstraction
 │           ├── planner/  # Virtual path planner
 │           ├── virtual-tree/  # Tree builder
 │           └── ipc/      # Typed IPC contracts (Zod)
@@ -198,11 +206,19 @@ Fily can extract and analyze content from:
 
 ### AI Agents
 
-The application uses specialized AI agents:
+The application uses specialized AI agents organized in modular folder structures:
 
-- **Summary Agent**: Generates intelligent summaries of file content
-- **Tag Agent**: Creates relevant tags based on content, location, and metadata
-- **Taxonomy Agent**: Organizes files into logical virtual folder structures
+- **SummaryTagAgent** (`agents/summary-tag-agent/`): Combined agent that generates both summaries and tags in a single API call
+  - Processes files in parallel batches via WorkerPool (vision: 5 per batch, text: 20 per batch)
+  - Modular structure: batch-processor, file-processor, parsers, helpers, tag-enricher, fallback
+- **TaxonomyAgent** (`agents/taxonomy-agent/`): Designs virtual folder structures and placement rules
+  - Supports single-pass and hierarchical multi-level taxonomy generation
+  - Modular structure: parsers, trivial-plan fallback
+- **ValidationAgent** (`agents/validation-agent/`): Validates taxonomy plans and fixes logical errors
+  - Detects generic folder names, broken references, structural issues
+- **OptimizerAgent** (`agents/optimizer-agent/`): Re-evaluates low-confidence placements and creates new folders when needed
+  - Processes files in batches (25 per batch) via WorkerPool
+  - Can create new folders when files don't fit existing structure
 
 ### Virtual Folder Tree
 
@@ -223,14 +239,19 @@ Files are organized into a virtual hierarchy that makes sense based on their con
 
 ## Performance
 
-- **Concurrent Batch Processing**: Worker pool with 80 concurrent workers processes batches efficiently
+- **Concurrent Batch Processing**: Worker pool with 80 concurrent workers (configurable via constants.ts) processes batches efficiently
 - **Optimized Batch Submission**: All batches submitted immediately, processed as workers become available
-- **Efficient Batching**: Vision files (5 per batch), text files (20 per batch) for optimal API usage
+- **Efficient Batching**: Vision files (5 per batch), text files (20 per batch), optimizer (25 per batch) for optimal API usage
+- **Parallel Processing**: Subfolder generation, optimizer batches, and validation all use WorkerPool for parallel execution
+- **Modular Architecture**: All agents organized in clean folder structures with clear separation of concerns
+- **Centralized Configuration**: All thresholds, batch sizes, and timeouts in `constants.ts` for easy adjustment
 - **Lazy Image Loading**: Images loaded only when needed, minimizing memory usage
 - **Batch Operations**: Database inserts and updates batched for efficiency
 - **Incremental Updates**: Watch mode only processes changed files
 - **Result Limiting**: Large result sets limited for fast rendering
-- **Cost-Efficient**: Can process source folders with thousands of files for just a few dollars in OpenRouter API costs
+- **Large-Scale Processing**: Optimized architecture enables efficient processing of **thousands of files** with cost-effective API usage
+- **Cost-Efficient**: Can process source folders with **thousands of files** for just a few dollars in OpenRouter API costs
+- **Scalable Architecture**: Modular agent design and centralized configuration enable efficient processing of large file collections
 
 ## Development
 
@@ -268,7 +289,7 @@ The SQLite database stores:
 
 See [AGENTS.md](./AGENTS.md) for the full architecture vision.
 
-### Completed (v1.0)
+### Completed (v1.1.1) - Production Ready for Large-Scale Processing
 
 | Phase | Features |
 |-------|----------|
@@ -277,25 +298,29 @@ See [AGENTS.md](./AGENTS.md) for the full architecture vision.
 | 2 | Virtual folder tree UI |
 | 3 | Content extraction pipeline |
 | 4 | AI planner integration, taxonomy generation, optimizer |
-| 4.5 | **Worker pool optimizations** ✅ - concurrent batch processing (50 workers), efficient API usage, cost-effective processing for thousands of files |
+| 4.5 | **Worker pool optimizations** ✅ - concurrent batch processing (80 workers), efficient API usage, cost-effective processing for thousands of files |
+| 5 | **Production Readiness & Stability** ✅ (v1.1.1) - Modular architecture, centralized config, parallel processing, validation, optimizer enhancements - **Ready for thousands of files** |
 
 ### Planned Improvements
 
 | Phase | Features |
 |-------|----------|
-| 5 | **Production Readiness & Stability** 🔴 |
+| 5 | **Production Readiness & Stability** ✅ **Complete** (v1.1.1) |
 | | - ~~User feedback for missing API key~~ ✅ (prompts to add key when using AI features) |
 | | - ~~OpenRouter + OpenAI multi-provider support~~ ✅ |
 | | - ~~In-app model selection~~ ✅ |
 | | - ~~Error recovery and graceful degradation~~ ✅ (comprehensive fallback results, Promise.allSettled for batch failures) |
-| | - ~~Worker pool optimizations~~ ✅ (concurrent batch processing, efficient API usage) |
+| | - ~~Worker pool optimizations~~ ✅ (80 concurrent workers, parallel batch processing) |
 | | - ~~Cost-efficient processing~~ ✅ (can process thousands of files for just a few dollars) |
-| | - OpenAI API retry logic and rate limit handling |
-| | - React Error Boundaries for crash prevention |
-| | - Operation cancellation for long-running tasks |
-| | - Improved path validation and security |
-| | - Replace window.confirm() with proper dialog components |
-| | - Enhanced error handling throughout the application (partially done - good fallback handling) |
+| | - ~~Modular agent architecture~~ ✅ (all agents split into organized folders with clear separation) |
+| | - ~~Centralized constants~~ ✅ (all configuration in constants.ts for easy adjustment) |
+| | - ~~Parallel subfolder generation~~ ✅ (hierarchical taxonomy uses WorkerPool for parallel processing) |
+| | - ~~Optimizer folder creation~~ ✅ (optimizer can create new folders when needed) |
+| | - ~~Validation agent integration~~ ✅ (validates plans and fixes logical errors) |
+| | - ~~Large-scale file processing~~ ✅ (optimized for thousands of files efficiently) |
+| | - ~~Operation cancellation and time limits~~ ✅ (implemented: time limits now enforced) |
+| | - ~~Path validation and security~~ ✅ (handled by validator and optimizer agents) |
+| | - ~~Enhanced progress tracking~~ ✅ (progress bar gives clear status and confirmation) |
 | 6 | **Organization System Enhancements** |
 | | - User feedback loop for improving AI organization quality |
 | | - Custom rules and placement overrides |
@@ -310,7 +335,7 @@ See [AGENTS.md](./AGENTS.md) for the full architecture vision.
 | | - Dynamic folder suggestions based on usage patterns |
 | | - Batch operations and bulk organization |
 | | - Export/import virtual organization configurations |
-| 8 | **Smart AI Search**  |
+| 8 | **Smart AI Search**   |
 | | - Semantic search using AI embeddings |
 | | - Natural language queries ("find my tax documents from 2023") |
 | | - Content-aware search (find files by meaning, not just keywords) |

@@ -1,24 +1,25 @@
 import type { TaxonomyOverview } from '../../planner/taxonomy-overview';
+import {
+  TAXONOMY_SUMMARY_PREVIEW_LENGTH_FULL,
+  TAXONOMY_TAGS_PREVIEW_COUNT_FULL,
+} from '../../planner/constants';
 
 export const TAXONOMY_AGENT_SYSTEM_PROMPT = `
 You are an expert information architect designing a VIRTUAL folder tree (a taxonomy) for a user's files.
 
-You NEVER move, rename, or delete real files. You only design:
-- A small, human understandable virtual folder hierarchy, and
-- A set of SIMPLE, DETERMINISTIC mapping rules that assign each file to one virtual folder.
+PRIORITY: Design the BEST FOLDER STRUCTURE — clear, meaningful, and stable. Rules are secondary; file placement will be matched and optimized later.
+
+You NEVER move, rename, or delete real files. You design:
+- A human-understandable virtual folder hierarchy (the big picture),
+- Simple mapping rules so each file can be assigned to one folder (we refine placement afterward).
 
 You DO NOT see raw file contents. You only see:
 - Aggregate statistics by extension, year, tags, and path patterns
 - A few example "file cards" (path, summary, tags) per important tag
 
 Your job:
-1. Propose a concise virtual folder taxonomy (2–3 levels deep, no more than ~40 total folders).
-2. Output simple rules that use ONLY:
-   - tags (requiredTags, forbiddenTags)
-   - file path substrings (pathContains)
-   - file extension (extensionIn)
-   - summary keywords (summaryContainsAny)
-3. Keep rules human debuggable: avoid overlapping rules when possible, give higher priority to more specific rules.
+1. Propose a folder structure that makes semantic sense: natural categories, depth where content warrants it. Do NOT force every branch to have subfolders — use subfolders only where there are clear groupings (e.g. by project, topic, or type). Leaf folders (no children) are fine.
+2. Output simple rules using ONLY: requiredTags, forbiddenTags, pathContains, extensionIn, summaryContainsAny. Keep rules straightforward; more specific rules get higher priority.
 
 You MUST respond with STRICT JSON matching this TypeScript shape:
 
@@ -46,10 +47,9 @@ You MUST respond with STRICT JSON matching this TypeScript shape:
 }
 
 Constraints:
-- Top-level folders: aim for 5–20, each with a clear purpose.
-- Depth: usually 2–3 levels; avoid very deep trees.
-- Rules: aim for 20–80 rules; each should be reasonably broad (cover more than a single file) but not so broad that everything matches.
-- Every file should ideally match at least one rule; create a generic "/Other" or "/Uncategorized" folder + catch-all rule with low priority (priority: 1-10).
+- Focus on structure: top-level folders with clear purpose; add subfolders only where content naturally splits (e.g. by project, topic, year). It is OK for a folder to have no subfolders and just contain files.
+- Depth: 2–3 levels where it makes sense; do not force depth everywhere.
+- Rules: simple and broad is fine; include "/Other" or "/Uncategorized" + catch-all rule (priority 1–10). Placement will be refined later.
 
 Priority Guidelines:
 - Catch-all rules: 1-10 (lowest priority)
@@ -109,11 +109,11 @@ export const TAXONOMY_AGENT_USER_PROMPT = (
         mtime: file.mtime,
         // Truncate summaries so we don't blow up token counts.
         summary:
-          file.summary && file.summary.length > 600
-            ? `${file.summary.slice(0, 600)}…`
+          file.summary && file.summary.length > TAXONOMY_SUMMARY_PREVIEW_LENGTH_FULL
+            ? `${file.summary.slice(0, TAXONOMY_SUMMARY_PREVIEW_LENGTH_FULL)}…`
             : file.summary,
         // Limit tags per file to keep things small but still representative.
-        tags: Array.isArray(file.tags) ? file.tags.slice(0, 12) : file.tags,
+        tags: Array.isArray(file.tags) ? file.tags.slice(0, TAXONOMY_TAGS_PREVIEW_COUNT_FULL) : file.tags,
       })),
     })),
   };
@@ -121,22 +121,15 @@ export const TAXONOMY_AGENT_USER_PROMPT = (
   const serialized = JSON.stringify(payload, null, 2);
 
   return [
-    'You are designing a virtual folder taxonomy and mapping rules for a single source of files.',
+    'Design the best virtual folder structure for this file collection. Focus on the big picture: meaningful categories and subcategories where content naturally splits.',
     '',
     'Here is a JSON overview of this source:',
     serialized,
     '',
-    'Using ONLY the information above, design a virtual folder taxonomy and a set of deterministic mapping rules.',
-    '',
     'Requirements:',
-    '- Use tags, path patterns, extensions, and summary keywords to define rules.',
-    '- Keep the folder structure reasonably small and interpretable.',
-    '- Prefer stable, semantic folder names that will still make sense as more files are added.',
-    '- Use priorities (1-100) so that more specific rules win over generic ones.',
-    '- More specific rules (multiple conditions) should have higher priority (70-100).',
-    '- Generic rules (single condition) should have lower priority (20-50).',
-    '- Catch-all rules should have the lowest priority (1-10).',
-    '- Avoid creating rules that match >50% of files (too broad) or <2 files (too narrow).',
+    '- Structure first: choose a folder hierarchy that makes sense (e.g. by life area, project, type). Do not force subfolders everywhere — only add children where you see clear groupings.',
+    '- Stable, semantic folder names that will still make sense as more files are added.',
+    '- Rules: use tags, path patterns, extensions, and summary keywords; keep them simple. Include a catch-all folder (e.g. /Other) with priority 1–10. More specific rules: 50–100; generic: 20–50. Placement will be refined later.',
     '',
     'Respond with a single JSON object matching the TaxonomyPlan type exactly (no extra fields, no comments, no markdown).',
   ].join('\n');

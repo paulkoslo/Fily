@@ -386,6 +386,7 @@ export type ExtractContentResponse = z.infer<typeof ExtractContentResponseSchema
 // runPlanner (AI virtual organization)
 export const RunPlannerRequestSchema = z.object({
   sourceId: z.number().optional(),
+  skipOptimization: z.boolean().optional(), // If true, skip optimizer step (for "Organize only" mode)
 });
 
 export const PlannerProgressSchema = z.object({

@@ -258,6 +258,7 @@ declare global {
 
   interface RunPlannerRequest {
     sourceId?: number;
+    skipOptimization?: boolean; // If true, skip optimizer step (for "Organize only" mode)
   }
 
   interface PlannerProgress {

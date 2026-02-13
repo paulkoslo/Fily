@@ -1,11 +1,13 @@
 /**
  * Worker Pool for managing concurrent AI API calls
  * 
- * Limits concurrent AI operations (OpenAI API calls) to a maximum of 50 workers.
+ * Limits concurrent AI operations (OpenAI API calls) to a maximum of WORKER_POOL_DEFAULT_MAX_WORKERS.
  * Each AI agent call (SummaryTagAgent batch, Audio transcription, etc.) counts as 1 worker.
  * 
  * Logging is minimal - only errors and important state changes are logged.
  */
+
+import { WORKER_POOL_DEFAULT_MAX_WORKERS, WORKER_POOL_MAX_ITERATIONS, WORKER_POOL_CHECK_INTERVAL_MS } from '../planner/constants';
 
 export class WorkerPool {
   private maxWorkers: number;
@@ -13,7 +15,7 @@ export class WorkerPool {
   private queue: Array<() => Promise<any>> = [];
   private running: boolean = true;
 
-  constructor(maxWorkers: number = 80) {
+  constructor(maxWorkers: number = WORKER_POOL_DEFAULT_MAX_WORKERS) {
     this.maxWorkers = maxWorkers;
   }
 
@@ -104,9 +106,9 @@ export class WorkerPool {
    */
   async waitForCompletion(): Promise<void> {
     let iterations = 0;
-    const maxIterations = 10000; // Safety limit (1000 seconds max wait)
+    const maxIterations = WORKER_POOL_MAX_ITERATIONS;
     while ((this.activeWorkers > 0 || this.queue.length > 0) && iterations < maxIterations) {
-      await new Promise(resolve => setTimeout(resolve, 50)); // Check more frequently
+      await new Promise(resolve => setTimeout(resolve, WORKER_POOL_CHECK_INTERVAL_MS));
       iterations++;
     }
     if (iterations >= maxIterations) {

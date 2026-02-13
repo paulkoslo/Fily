@@ -1,5 +1,6 @@
 import type { FileRecord, PlannerOutput } from '../ipc/contracts';
 import type { Planner } from './index';
+import { STUB_PLANNER_CONFIDENCE } from './constants';
 
 /**
  * Extension-based category mapping.
@@ -131,7 +132,7 @@ export class StubPlanner implements Planner {
       file_id: file.file_id,
       virtual_path: virtualPath,
       tags,
-      confidence: 0.7, // Stub planner has moderate confidence
+      confidence: STUB_PLANNER_CONFIDENCE,
       reason: `Categorized by extension: .${ext} → ${category}`,
     };
   }

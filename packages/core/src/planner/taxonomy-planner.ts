@@ -1,9 +1,35 @@
 import type { Planner } from './index';
 import type { FileRecord, PlannerOutput, FileCard } from '../ipc/contracts';
 import type { DatabaseManager } from '../db';
-import { TaxonomyAgent, OptimizerAgent, type WorkerPool } from '../agents';
+import { TaxonomyAgent, OptimizerAgent, ValidationAgent, type WorkerPool, type OptimizerNewFolder } from '../agents';
 import { buildTaxonomyOverview } from './taxonomy-overview';
+import { getTaxonomyStrategy } from './taxonomy-strategy';
+import { runTaxonomyPlan } from './taxonomy-orchestrator';
 import type { TaxonomyPlan, PlacementRule, VirtualFolderSpec } from './taxonomy-types';
+import type { TaxonomyStrategy } from './taxonomy-strategy';
+import {
+  findBestRule,
+  computeRuleMatchCounts,
+  calculateRuleSpecificity,
+} from './taxonomy-rule-matcher';
+import {
+  OPTIMIZER_CONFIDENCE_THRESHOLD,
+  UNMATCHED_FILE_CONFIDENCE,
+  STUB_PLANNER_CONFIDENCE,
+  MIN_BASE_CONFIDENCE,
+  BASE_CONFIDENCE_RANGE,
+  MIN_SPECIFICITY_MULTIPLIER,
+  SPECIFICITY_MULTIPLIER_RANGE,
+  MIN_MATCH_QUALITY_MULTIPLIER,
+  MATCH_QUALITY_MULTIPLIER_RANGE,
+  COVERAGE_PENALTY_THRESHOLD,
+  MIN_COVERAGE_PENALTY,
+  COVERAGE_PENALTY_RANGE,
+  MAX_COVERAGE_PENALTY,
+  MIN_ENHANCED_CONFIDENCE,
+  MAX_ENHANCED_CONFIDENCE,
+  BROAD_RULE_WARNING_THRESHOLD,
+} from './constants';
 
 export class TaxonomyPlanner implements Planner {
   readonly id = 'taxonomy-planner';
@@ -11,6 +37,7 @@ export class TaxonomyPlanner implements Planner {
 
   private db: DatabaseManager;
   private agent: TaxonomyAgent;
+  private validator: ValidationAgent | null;
   private optimizer: OptimizerAgent | null;
   private onProgress?: (message: string) => void;
 
@@ -21,12 +48,13 @@ export class TaxonomyPlanner implements Planner {
     onProgress?: (message: string) => void
   ) {
     this.db = db;
-    this.agent = agent ?? new TaxonomyAgent();
+    this.agent = agent ?? new TaxonomyAgent(workerPool);
+    this.validator = workerPool ? new ValidationAgent(workerPool) : null;
     this.optimizer = workerPool ? new OptimizerAgent(workerPool) : null;
     this.onProgress = onProgress;
   }
 
-  async plan(files: FileRecord[]): Promise<PlannerOutput[]> {
+  async plan(files: FileRecord[], options?: { skipOptimization?: boolean }): Promise<PlannerOutput[]> {
     if (files.length === 0) return [];
 
     // For now we assume all files belong to the same source.
@@ -38,24 +66,53 @@ export class TaxonomyPlanner implements Planner {
       return [];
     }
 
-    // 2) Build aggregate overview for the agent
-    const overview = buildTaxonomyOverview(sourceId, fileCards, {
-      maxTags: 50, // Increased to support larger datasets
-      samplesPerTag: 20, // Increased to provide more context per tag
-    });
+    // 2) Choose strategy by file count (single vs hierarchical)
+    const strategy = getTaxonomyStrategy(fileCards.length);
 
-    // 3) Ask TaxonomyAgent for a plan
-    const plan: TaxonomyPlan = await this.agent.generatePlan(overview);
+    // 3) Get plan: single-pass or multi-pass via orchestrator
+    const plan: TaxonomyPlan =
+      strategy.mode === 'single'
+        ? await this.getSinglePassPlan(sourceId, fileCards, strategy)
+        : await runTaxonomyPlan(fileCards, this.agent, strategy, {
+            sourceId,
+            onProgress: this.onProgress,
+          });
 
-    // 4) Validate plan quality and log warnings
-    this.validatePlan(plan, fileCards);
+    // 4) Repair rule→folder references (fixes LLM typos / case mismatches so files don't fall back to /Other)
+    this.repairPlan(plan);
 
-    // 5) Apply the plan deterministically to produce PlannerOutput[]
-    const outputs = this.applyPlanToFiles(plan, fileCards);
+    // 5) Validate plan with ValidationAgent and apply corrections
+    let validatedPlan = plan;
+    let filesNeedingOptimization: string[] = [];
+    if (this.validator) {
+      const overview = buildTaxonomyOverview(sourceId, fileCards, {
+        maxTags: strategy.maxTags,
+        samplesPerTag: strategy.samplesPerTag,
+      });
+      const validationResult = await this.validator.validatePlan(plan, overview, fileCards, this.onProgress);
+      
+      if (validationResult.issues.length > 0) {
+        this.onProgress?.(
+          `Found ${validationResult.issues.length} issue(s) in taxonomy plan, applying corrections...`
+        );
+        validatedPlan = this.validator.applyCorrections(plan, validationResult);
+        filesNeedingOptimization = validationResult.filesNeedingOptimization.map((f) => f.fileId);
+        
+        // Re-repair after corrections (new folders/rules might have issues)
+        this.repairPlan(validatedPlan);
+      }
+    }
 
-    // 6) Optimize low-confidence files (< 70%) if optimizer is available
-    if (this.optimizer) {
-      const lowConfidenceThreshold = 0.7;
+    // 6) Validate plan quality and log warnings
+    this.validatePlan(validatedPlan, fileCards);
+
+    // 7) Apply the plan deterministically to produce PlannerOutput[]
+    const outputs = this.applyPlanToFiles(validatedPlan, fileCards);
+
+    // 8) Optimize low-confidence files and files flagged by validator (unless skipped)
+    if (this.optimizer && !options?.skipOptimization) {
+      const lowConfidenceThreshold = OPTIMIZER_CONFIDENCE_THRESHOLD;
+      const filesToOptimize = new Set(filesNeedingOptimization);
       const lowConfidenceFiles: { card: FileCard; currentPlacement: PlannerOutput }[] = [];
 
       // Create a map of file_id to FileCard for quick lookup
@@ -64,9 +121,9 @@ export class TaxonomyPlanner implements Planner {
         cardMap.set(card.file_id, card);
       }
 
-      // Find files with low confidence
+      // Find files with low confidence OR flagged by validator
       for (const output of outputs) {
-        if (output.confidence < lowConfidenceThreshold) {
+        if (output.confidence < lowConfidenceThreshold || filesToOptimize.has(output.file_id)) {
           const card = cardMap.get(output.file_id);
           if (card) {
             lowConfidenceFiles.push({
@@ -82,20 +139,49 @@ export class TaxonomyPlanner implements Planner {
           `Optimizing ${lowConfidenceFiles.length} files with low confidence scores...`
         );
 
-        const optimizedResults = await this.optimizer.optimizePlacements(
-          plan,
+        const { optimizations: optimizedResults, newFolders } = await this.optimizer.optimizePlacements(
+          validatedPlan,
           lowConfidenceFiles,
           this.onProgress
         );
+
+        // Add new folders from optimizer to the plan
+        if (newFolders && newFolders.length > 0) {
+          const existingFolderPaths = new Set(validatedPlan.folders.map(f => f.path));
+          const newFolderSpecs = newFolders
+            .filter(f => !existingFolderPaths.has(f.path))
+            .map((f, index) => ({
+              id: `optimizer-folder-${Date.now()}-${index}`,
+              path: f.path.startsWith('/') ? f.path : '/' + f.path,
+              description: f.description,
+            }));
+          
+          if (newFolderSpecs.length > 0) {
+            validatedPlan.folders.push(...newFolderSpecs);
+            this.onProgress?.(`Optimizer created ${newFolderSpecs.length} new folder(s) for better organization`);
+            console.log(`[TaxonomyPlanner] Optimizer created ${newFolderSpecs.length} new folder(s):`, newFolderSpecs.map(f => f.path));
+          }
+        }
 
         // Create a map of optimized results by fileId
         const optimizedMap = new Map<string, PlannerOutput>();
         for (const optResult of optimizedResults) {
           const card = cardMap.get(optResult.fileId);
           if (card) {
+            // Ensure virtualPath includes the filename (fix LLM mistakes)
+            let virtualPath = optResult.virtualPath;
+            if (!virtualPath.endsWith(card.name)) {
+              // If path doesn't end with filename, append it
+              const base = virtualPath.endsWith('/') ? virtualPath.slice(0, -1) : virtualPath;
+              virtualPath = `${base}/${card.name}`;
+              console.warn(
+                `[TaxonomyPlanner] Optimizer returned path without filename for ${card.name}, repaired: ${virtualPath}`
+              );
+            }
+            
             optimizedMap.set(optResult.fileId, {
               file_id: optResult.fileId,
-              virtual_path: optResult.virtualPath,
+              virtual_path: virtualPath,
               tags: card.tags ?? [],
               confidence: optResult.confidence,
               reason: optResult.reason,
@@ -121,9 +207,22 @@ export class TaxonomyPlanner implements Planner {
     return outputs;
   }
 
+  /** Single-pass: one overview, one full plan from the agent. */
+  private async getSinglePassPlan(
+    sourceId: number,
+    fileCards: FileCard[],
+    strategy: TaxonomyStrategy
+  ): Promise<TaxonomyPlan> {
+    const overview = buildTaxonomyOverview(sourceId, fileCards, {
+      maxTags: strategy.maxTags,
+      samplesPerTag: strategy.samplesPerTag,
+    });
+    return this.agent.generatePlan(overview);
+  }
+
   /**
    * Optimize existing virtual placements for low-confidence files only.
-   * This method reads existing placements from the database and optimizes files with confidence < 0.7.
+   * This method reads existing placements from the database and optimizes files with confidence < OPTIMIZER_CONFIDENCE_THRESHOLD.
    */
   async optimizeExistingPlacements(sourceId: number): Promise<PlannerOutput[]> {
     if (!this.optimizer) {
@@ -148,8 +247,8 @@ export class TaxonomyPlanner implements Planner {
       cardMap.set(card.file_id, card);
     }
 
-    // 3) Find low-confidence files (< 70%)
-    const lowConfidenceThreshold = 0.7;
+    // 3) Find low-confidence files (< OPTIMIZER_CONFIDENCE_THRESHOLD)
+    const lowConfidenceThreshold = OPTIMIZER_CONFIDENCE_THRESHOLD;
     const lowConfidenceFiles: { card: FileCard; currentPlacement: PlannerOutput }[] = [];
 
     for (const placement of existingPlacements) {
@@ -207,20 +306,48 @@ export class TaxonomyPlanner implements Planner {
     // 5) Run optimizer
     this.onProgress?.(`Found ${lowConfidenceFiles.length} low-confidence files to optimize...`);
 
-    const optimizedResults = await this.optimizer.optimizePlacements(
+    const { optimizations: optimizedResults, newFolders } = await this.optimizer.optimizePlacements(
       plan,
       lowConfidenceFiles,
       this.onProgress
     );
+
+    // Add new folders from optimizer to the plan
+    if (newFolders && newFolders.length > 0) {
+      const existingFolderPaths = new Set(plan.folders.map(f => f.path));
+      const newFolderSpecs = newFolders
+        .filter(f => !existingFolderPaths.has(f.path))
+        .map((f, index) => ({
+          id: `optimizer-folder-${Date.now()}-${index}`,
+          path: f.path.startsWith('/') ? f.path : '/' + f.path,
+          description: f.description,
+        }));
+      
+      if (newFolderSpecs.length > 0) {
+        plan.folders.push(...newFolderSpecs);
+        this.onProgress?.(`Optimizer created ${newFolderSpecs.length} new folder(s) for better organization`);
+        console.log(`[TaxonomyPlanner] Optimizer created ${newFolderSpecs.length} new folder(s):`, newFolderSpecs.map(f => f.path));
+      }
+    }
 
     // 6) Build updated PlannerOutput[] with optimized results
     const optimizedMap = new Map<string, PlannerOutput>();
     for (const optResult of optimizedResults) {
       const card = cardMap.get(optResult.fileId);
       if (card) {
+        // Ensure virtualPath includes the filename (fix LLM mistakes)
+        let virtualPath = optResult.virtualPath;
+        if (!virtualPath.endsWith(card.name)) {
+          const base = virtualPath.endsWith('/') ? virtualPath.slice(0, -1) : virtualPath;
+          virtualPath = `${base}/${card.name}`;
+          console.warn(
+            `[TaxonomyPlanner] Optimizer returned path without filename for ${card.name}, repaired: ${virtualPath}`
+          );
+        }
+        
         optimizedMap.set(optResult.fileId, {
           file_id: optResult.fileId,
-          virtual_path: optResult.virtualPath,
+          virtual_path: virtualPath,
           tags: card.tags ?? [],
           confidence: optResult.confidence,
           reason: optResult.reason,
@@ -277,12 +404,12 @@ export class TaxonomyPlanner implements Planner {
     }
 
     // Pre-compute rule match counts for coverage analysis (used in confidence calculation)
-    const ruleMatchCounts = this.computeRuleMatchCounts(plan.rules, fileCards);
+    const ruleMatchCounts = computeRuleMatchCounts(plan.rules, fileCards);
 
     const outputs: PlannerOutput[] = [];
 
     for (const card of fileCards) {
-      const matchResult = this.findBestRule(plan.rules, card);
+      const matchResult = findBestRule(plan.rules, card);
       const match = matchResult?.rule;
       const matchQuality = matchResult?.matchQuality ?? 0;
       const folder = match ? folderById.get(match.targetFolderId) : undefined;
@@ -301,7 +428,7 @@ export class TaxonomyPlanner implements Planner {
             ruleMatchCounts.get(match.id) ?? 0,
             fileCards.length
           )
-        : baseConfidence * 0.6; // Lower confidence for unmatched files
+        : baseConfidence * UNMATCHED_FILE_CONFIDENCE; // Lower confidence for unmatched files
 
       const reason =
         (match?.reasonTemplate && match.reasonTemplate.trim().length > 0
@@ -325,180 +452,78 @@ export class TaxonomyPlanner implements Planner {
   }
 
   /**
-   * Find the best matching rule for a file card.
-   * Returns both the rule and match quality score (0-1).
+   * Repair plan so every rule's targetFolderId points to an existing folder.
+   * Fixes LLM typos and case mismatches (e.g. "All" vs "all") so files are placed in the correct folder instead of falling back to /Other.
    */
-  private findBestRule(
-    rules: PlacementRule[],
-    card: FileCard
-  ): { rule: PlacementRule; matchQuality: number } | undefined {
-    let best: PlacementRule | undefined;
-    let bestScore = -Infinity;
-    let bestMatchQuality = 0;
+  private repairPlan(plan: TaxonomyPlan): void {
+    const normalizePath = (path: string) => {
+      const p = path.trim().replace(/\\/g, '/');
+      if (!p) return '/Other';
+      const withLeading = p.startsWith('/') ? p : '/' + p;
+      return withLeading.endsWith('/') ? withLeading.slice(0, -1) : withLeading;
+    };
 
-    for (const rule of rules) {
-      const matchResult = this.ruleMatchesWithQuality(rule, card);
-      if (!matchResult.matches) continue;
-
-      // Calculate composite score: priority + specificity bonus
-      const specificity = this.calculateRuleSpecificity(rule);
-      const score = rule.priority + specificity * 10; // Specificity adds up to 10 points
-
-      if (!best || score > bestScore) {
-        best = rule;
-        bestScore = score;
-        bestMatchQuality = matchResult.matchQuality;
-      }
+    for (const folder of plan.folders) {
+      folder.path = normalizePath(folder.path);
     }
 
-    return best ? { rule: best, matchQuality: bestMatchQuality } : undefined;
-  }
-
-  /**
-   * Check if a rule matches a file card and return match quality (0-1).
-   * Match quality indicates how many conditions matched vs. total conditions.
-   */
-  private ruleMatchesWithQuality(
-    rule: PlacementRule,
-    card: FileCard
-  ): { matches: boolean; matchQuality: number } {
-    const tags = (card.tags ?? []).map((t) => t.toLowerCase());
-    const tagSet = new Set(tags);
-    const path = (card.relative_path ?? card.path).toLowerCase();
-    const ext = card.extension.toLowerCase();
-    const summary = (card.summary ?? '').toLowerCase();
-
-    let conditionsChecked = 0;
-    let conditionsMatched = 0;
-
-    // requiredTags: all must be present
-    if (rule.requiredTags && rule.requiredTags.length > 0) {
-      conditionsChecked++;
-      let allPresent = true;
-      for (const raw of rule.requiredTags) {
-        const t = raw.toLowerCase();
-        if (!tagSet.has(t)) {
-          allPresent = false;
-          break;
-        }
-      }
-      if (!allPresent) {
-        return { matches: false, matchQuality: 0 };
-      }
-      conditionsMatched++;
+    const folderById = new Map<string, VirtualFolderSpec>();
+    const idByLower = new Map<string, string>();
+    for (const folder of plan.folders) {
+      folderById.set(folder.id, folder);
+      idByLower.set(folder.id.toLowerCase(), folder.id);
     }
 
-    // forbiddenTags: none may be present
-    if (rule.forbiddenTags && rule.forbiddenTags.length > 0) {
-      conditionsChecked++;
-      let nonePresent = true;
-      for (const raw of rule.forbiddenTags) {
-        const t = raw.toLowerCase();
-        if (tagSet.has(t)) {
-          nonePresent = false;
-          break;
-        }
+    let fallbackId: string | undefined;
+    for (const folder of plan.folders) {
+      if (folder.path === '/Other' || folder.path.endsWith('/Other')) {
+        fallbackId = folder.id;
+        break;
       }
-      if (!nonePresent) {
-        return { matches: false, matchQuality: 0 };
-      }
-      conditionsMatched++;
     }
-
-    // pathContains: at least one substring must appear in path
-    if (rule.pathContains && rule.pathContains.length > 0) {
-      conditionsChecked++;
-      const anyMatch = rule.pathContains.some((p) => {
-        const needle = String(p).toLowerCase();
-        return needle.length > 0 && path.includes(needle);
+    if (!fallbackId && plan.folders.length > 0) {
+      fallbackId = plan.folders[0].id;
+    }
+    if (!fallbackId) {
+      plan.folders.push({
+        id: 'other',
+        path: '/Other',
+        description: 'Uncategorized',
       });
-      if (!anyMatch) {
-        return { matches: false, matchQuality: 0 };
+      folderById.set('other', plan.folders[plan.folders.length - 1]);
+      idByLower.set('other', 'other');
+      fallbackId = 'other';
+    }
+
+    let repaired = 0;
+    for (const rule of plan.rules) {
+      if (folderById.has(rule.targetFolderId)) continue;
+      const byLower = idByLower.get(rule.targetFolderId.toLowerCase());
+      if (byLower) {
+        rule.targetFolderId = byLower;
+        repaired++;
+      } else {
+        rule.targetFolderId = fallbackId!;
+        repaired++;
       }
-      conditionsMatched++;
     }
-
-    // extensionIn: extension must be in the list (case-insensitive)
-    if (rule.extensionIn && rule.extensionIn.length > 0) {
-      conditionsChecked++;
-      const allowed = rule.extensionIn.map((e) => String(e).toLowerCase());
-      if (!allowed.includes(ext)) {
-        return { matches: false, matchQuality: 0 };
-      }
-      conditionsMatched++;
+    if (repaired > 0) {
+      console.warn(
+        `[TaxonomyPlanner] Repaired ${repaired} rule(s) with missing or mismatched targetFolderId (e.g. JSON/LLM typo or case mismatch).`
+      );
     }
-
-    // summaryContainsAny: at least one keyword must appear in summary
-    if (rule.summaryContainsAny && rule.summaryContainsAny.length > 0) {
-      conditionsChecked++;
-      const anyMatch = rule.summaryContainsAny.some((kw) => {
-        const needle = String(kw).toLowerCase();
-        return needle.length > 0 && summary.includes(needle);
-      });
-      if (!anyMatch) {
-        return { matches: false, matchQuality: 0 };
-      }
-      conditionsMatched++;
-    }
-
-    // If no conditions were checked, rule matches everything (catch-all)
-    if (conditionsChecked === 0) {
-      return { matches: true, matchQuality: 0.5 }; // Lower quality for catch-all rules
-    }
-
-    // Match quality = proportion of conditions that matched
-    const matchQuality = conditionsMatched / conditionsChecked;
-    return { matches: true, matchQuality };
   }
 
   /**
-   * Calculate rule specificity based on number of conditions.
-   * More conditions = more specific = higher score (0-1).
-   */
-  private calculateRuleSpecificity(rule: PlacementRule): number {
-    let conditionCount = 0;
-    if (rule.requiredTags && rule.requiredTags.length > 0) conditionCount++;
-    if (rule.forbiddenTags && rule.forbiddenTags.length > 0) conditionCount++;
-    if (rule.pathContains && rule.pathContains.length > 0) conditionCount++;
-    if (rule.extensionIn && rule.extensionIn.length > 0) conditionCount++;
-    if (rule.summaryContainsAny && rule.summaryContainsAny.length > 0) conditionCount++;
-
-    // Normalize to 0-1 range (0 conditions = 0, 5+ conditions = 1)
-    return Math.min(1, conditionCount / 5);
-  }
-
-  /**
-   * Compute how many files each rule matches (for coverage analysis).
-   */
-  private computeRuleMatchCounts(
-    rules: PlacementRule[],
-    fileCards: FileCard[]
-  ): Map<string, number> {
-    const counts = new Map<string, number>();
-    for (const rule of rules) {
-      let matchCount = 0;
-      for (const card of fileCards) {
-        const result = this.ruleMatchesWithQuality(rule, card);
-        if (result.matches) {
-          matchCount++;
-        }
-      }
-      counts.set(rule.id, matchCount);
-    }
-    return counts;
-  }
-
-  /**
-   * Normalize priority to base confidence (0.4-0.95).
+   * Normalize priority to base confidence (MIN_BASE_CONFIDENCE-MAX_BASE_CONFIDENCE).
    */
   private normalizeConfidence(priority: number, minPriority: number, maxPriority: number): number {
     if (maxPriority <= minPriority) {
-      return 0.7;
+      return STUB_PLANNER_CONFIDENCE;
     }
     const normalized = (priority - minPriority) / (maxPriority - minPriority);
     const clamped = Math.max(0, Math.min(1, normalized));
-    // Keep confidence in a comfortable range [0.4, 0.95]
-    return 0.4 + clamped * 0.55;
+    return MIN_BASE_CONFIDENCE + clamped * BASE_CONFIDENCE_RANGE;
   }
 
   /**
@@ -515,23 +540,25 @@ export class TaxonomyPlanner implements Planner {
     matchCount: number,
     totalFiles: number
   ): number {
-    // Specificity multiplier: more specific rules get boost (0.9-1.1)
-    const specificity = this.calculateRuleSpecificity(rule);
-    const specificityMultiplier = 0.9 + specificity * 0.2;
+    // Specificity multiplier: more specific rules get boost
+    const specificity = calculateRuleSpecificity(rule);
+    const specificityMultiplier = MIN_SPECIFICITY_MULTIPLIER + specificity * SPECIFICITY_MULTIPLIER_RANGE;
 
-    // Match quality multiplier: perfect matches get boost (0.95-1.05)
-    const matchQualityMultiplier = 0.95 + matchQuality * 0.1;
+    // Match quality multiplier: perfect matches get boost
+    const matchQualityMultiplier = MIN_MATCH_QUALITY_MULTIPLIER + matchQuality * MATCH_QUALITY_MULTIPLIER_RANGE;
 
-    // Coverage penalty: rules matching >50% of files get penalized (0.85-1.0)
+    // Coverage penalty: rules matching >COVERAGE_PENALTY_THRESHOLD of files get penalized
     const coverageRatio = totalFiles > 0 ? matchCount / totalFiles : 0;
-    const coveragePenalty = coverageRatio > 0.5 ? 0.85 + (1 - coverageRatio) * 0.15 : 1.0;
+    const coveragePenalty = coverageRatio > COVERAGE_PENALTY_THRESHOLD
+      ? MIN_COVERAGE_PENALTY + (1 - coverageRatio) * COVERAGE_PENALTY_RANGE
+      : MAX_COVERAGE_PENALTY;
 
     // Combine all factors
     const enhancedConfidence =
       baseConfidence * specificityMultiplier * matchQualityMultiplier * coveragePenalty;
 
-    // Clamp to reasonable range [0.3, 0.98]
-    return Math.max(0.3, Math.min(0.98, enhancedConfidence));
+    // Clamp to reasonable range
+    return Math.max(MIN_ENHANCED_CONFIDENCE, Math.min(MAX_ENHANCED_CONFIDENCE, enhancedConfidence));
   }
 
   private joinVirtualPath(folderPath: string, fileName: string): string {
@@ -544,7 +571,7 @@ export class TaxonomyPlanner implements Planner {
    * Validate plan quality and log warnings for issues.
    */
   private validatePlan(plan: TaxonomyPlan, fileCards: FileCard[]): void {
-    const ruleMatchCounts = this.computeRuleMatchCounts(plan.rules, fileCards);
+    const ruleMatchCounts = computeRuleMatchCounts(plan.rules, fileCards);
     const totalFiles = fileCards.length;
     const folderById = new Map<string, VirtualFolderSpec>();
     for (const folder of plan.folders) {
@@ -554,7 +581,7 @@ export class TaxonomyPlanner implements Planner {
     // Check for unmatched files
     let unmatchedCount = 0;
     for (const card of fileCards) {
-      const matchResult = this.findBestRule(plan.rules, card);
+      const matchResult = findBestRule(plan.rules, card);
       if (!matchResult) {
         unmatchedCount++;
       }
@@ -566,11 +593,11 @@ export class TaxonomyPlanner implements Planner {
       );
     }
 
-    // Check for overly broad rules (>50% of files)
+    // Check for overly broad rules (>BROAD_RULE_WARNING_THRESHOLD of files)
     for (const rule of plan.rules) {
       const matchCount = ruleMatchCounts.get(rule.id) ?? 0;
       const coverageRatio = matchCount / totalFiles;
-      if (coverageRatio > 0.5) {
+      if (coverageRatio > BROAD_RULE_WARNING_THRESHOLD) {
         console.warn(
           `[TaxonomyPlanner] Rule "${rule.id}" matches ${matchCount} files (${(coverageRatio * 100).toFixed(1)}%) - may be too broad. Consider making it more specific.`
         );
