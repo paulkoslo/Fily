@@ -10,17 +10,29 @@ Fily solves the problem of disorganized files scattered across your system. Inst
 
 ### Key Features
 
-- **Large-Scale Processing**: Optimized for processing **thousands of files** efficiently with 80 concurrent workers and parallel batch processing
+- **Large-Scale Processing**: Optimized for processing **thousands of files** with configurable worker pools (80 default workers, 50 pipeline workers)
 - **Virtual Organization**: AI-powered virtual folder structure that organizes files by content, context, and meaning
 - **Non-Destructive**: Files are never moved, renamed, or deleted—your originals remain untouched
 - **Multiple Source Folders**: Index and organize files from multiple directories simultaneously
 - **Intelligent Content Extraction**: Automatically extracts and analyzes content from PDFs, documents, images, audio files, and more
 - **AI-Powered Tagging**: Generates intelligent tags and summaries for better searchability
+- **Modular Desktop Architecture**: Main-process IPC handlers and top-level UI composition are split into focused modules for maintainability
 - **Real-Time Indexing**: Watch mode automatically detects and indexes new files as they appear
 - **Fast Search**: Search across all indexed files by name, content, tags, or metadata
 - **Native Integration**: Opens files with your default macOS applications
 - **Local-First**: All data stored locally in SQLite—your files and metadata never leave your machine
 - **Cost-Efficient**: Process thousands of files for just a few dollars in API costs
+
+## Recent Structural & Efficiency Updates (February 2026)
+
+- **IPC modularization**: `apps/desktop/src/main/ipc-handlers.ts` now delegates to `ipc/content-handlers.ts`, `ipc/planner-handlers.ts`, and `ipc/virtual-tree-handlers.ts`
+- **Typed preload cleanup**: `apps/desktop/src/preload/index.ts` now uses shared channel constants and planner/optimizer request + response + progress schemas from core
+- **UI composition split**: `apps/ui/src/App.tsx` was decomposed into `AppToolbar`, `AppProgressBanners`, `AppContentView`, and `AppStatusBar`
+- **Filesystem pagination**: File loading now uses page-based fetches (`FILE_PAGE_SIZE = 200`) with infinite scroll and stale-response guards
+- **Virtual tree query optimization**: Initial tree loading now uses top-level-only loading for very large datasets, with lazy child loading on demand
+- **Database efficiency helpers**: Added direct virtual-children query helpers and chunked file-id lookup methods to reduce heavy full-tree queries
+- **Content freshness logic**: Extraction now targets files needing refresh (missing, failed, or stale content), not only files with no content
+- **Centralized pipeline workers**: Planner/extraction pipeline now uses `PIPELINE_WORKER_POOL_MAX_WORKERS` from shared constants
 
 ## Installation
 
@@ -125,7 +137,7 @@ Model selection is available in the Settings tab when using OpenRouter.
 
 ## How It Works
 
-Fily operates in four main stages:
+Fily operates in five main stages:
 
 1. **Index**: Crawls your source directories, extracts file metadata, and stores everything in a local SQLite database
 2. **Extract Raw Content**: Extracts raw content from files using specialized extractors for PDFs, documents, images, audio, and more
@@ -137,10 +149,10 @@ Fily operates in four main stages:
 
 Fily is built with a modular architecture:
 
-- **Electron Main Process**: Handles file system operations, database management, and IPC communication
-- **React Renderer**: Modern UI built with React and TypeScript
+- **Electron Main Process**: Handles file system operations, database management, and modular IPC registration
+- **React Renderer**: Modern UI built with React and TypeScript, with split toolbar/progress/content/status components
 - **Core Package**: Shared business logic including database, indexer, extractors, and AI agents
-- **Type-Safe IPC**: All communication between processes validated with Zod schemas
+- **Type-Safe IPC**: All communication between processes validated with shared Zod schemas and typed channel constants
 
 ## Project Structure
 
@@ -149,13 +161,14 @@ Fily/
 ├── apps/
 │   ├── desktop/          # Electron main process + preload
 │   │   ├── src/
-│   │   │   ├── main/     # Main process (window, IPC handlers)
+│   │   │   ├── main/     # Main process (window + IPC registration)
+│   │   │   │   └── ipc/  # Modular IPC handlers (content/planner/virtual-tree)
 │   │   │   └── preload/  # Secure bridge to renderer
 │   │   └── package.json  # Separate from workspace (has electron)
 │   │
 │   └── ui/               # React + Vite renderer
 │       └── src/
-│           ├── components/
+│           ├── components/  # Includes AppToolbar/AppProgressBanners/AppContentView/AppStatusBar
 │           ├── hooks/
 │           └── themes/
 │
@@ -241,16 +254,20 @@ Files are organized into a virtual hierarchy that makes sense based on their con
 
 ## Performance
 
-- **Concurrent Batch Processing**: Worker pool with 80 concurrent workers (configurable via constants.ts) processes batches efficiently
+- **Concurrent Batch Processing**: Worker pools are centralized and configurable (`WORKER_POOL_DEFAULT_MAX_WORKERS=80`, `PIPELINE_WORKER_POOL_MAX_WORKERS=50`)
 - **Optimized Batch Submission**: All batches submitted immediately, processed as workers become available
 - **Efficient Batching**: Vision files (5 per batch), text files (20 per batch), optimizer (25 per batch) for optimal API usage
 - **Parallel Processing**: Subfolder generation, optimizer batches, and validation all use WorkerPool for parallel execution
+- **Paginated File Loading**: Filesystem list fetches in pages (`FILE_PAGE_SIZE=200`) with infinite scroll and request-context safety
+- **Virtual Tree Lazy Loading**: For large datasets, top-level virtual nodes load first and children are fetched on expansion
+- **Direct Child Queries**: Virtual tree expansion uses direct folder/file child DB queries instead of rebuilding full subtrees
+- **Chunked ID Queries**: File record lookups for virtual placements are chunked to stay under SQLite variable limits
 - **Modular Architecture**: All agents organized in clean folder structures with clear separation of concerns
 - **Centralized Configuration**: All thresholds, batch sizes, and timeouts in `constants.ts` for easy adjustment
 - **Lazy Image Loading**: Images loaded only when needed, minimizing memory usage
 - **Batch Operations**: Database inserts and updates batched for efficiency
+- **Freshness-Aware Extraction**: Content extraction targets missing, failed, or stale records (`mtime > extracted_at`)
 - **Incremental Updates**: Watch mode only processes changed files
-- **Result Limiting**: Large result sets limited for fast rendering
 - **Large-Scale Processing**: Optimized architecture enables efficient processing of **thousands of files** with cost-effective API usage
 - **Cost-Efficient**: Can process source folders with **thousands of files** for just a few dollars in OpenRouter API costs
 - **Scalable Architecture**: Modular agent design and centralized configuration enable efficient processing of large file collections
@@ -260,7 +277,7 @@ Files are organized into a virtual hierarchy that makes sense based on their con
 ### Adding a New IPC Method
 
 1. Add Zod schemas in `packages/core/src/ipc/contracts.ts`
-2. Add handler in `apps/desktop/src/main/ipc-handlers.ts`
+2. Add handler in `apps/desktop/src/main/ipc/*.ts` and register it from `apps/desktop/src/main/ipc-handlers.ts`
 3. Expose in `apps/desktop/src/preload/index.ts`
 4. Add type to `apps/ui/src/types.d.ts`
 5. Use in React components via `window.api.newMethod()`
@@ -285,7 +302,7 @@ The SQLite database stores:
 
 1. **First Scan Required**: Files won't appear until you click "Scan" at least once for each source.
 
-2. **File Limit**: Only the first 1000 files are displayed per query for performance. Use search to filter results.
+2. **Progressive File Loading**: Large file lists load in pages as you scroll (default page size: 200 files).
 
 ## Roadmap
 
