@@ -11,6 +11,7 @@ const SQLITE_MAX_VARIABLES = 900;
 export class DatabaseManager {
   private db: InstanceType<typeof Database> | null = null;
   private dbPath: string;
+  private fileContentHasTagsColumn: boolean | null = null;
 
   constructor(dbPath: string) {
     this.dbPath = dbPath;
@@ -40,6 +41,16 @@ export class DatabaseManager {
       throw new Error('Database not initialized');
     }
     return this.db;
+  }
+
+  private hasFileContentTagsColumn(): boolean {
+    if (this.fileContentHasTagsColumn !== null) {
+      return this.fileContentHasTagsColumn;
+    }
+    const db = this.ensureReady();
+    const tableInfo = db.prepare(`PRAGMA table_info(file_content)`).all() as Array<{ name: string }>;
+    this.fileContentHasTagsColumn = tableInfo.some((col) => col.name === 'tags');
+    return this.fileContentHasTagsColumn;
   }
 
   // Sync method for explicit checkpoint (better-sqlite3 auto-saves, but checkpoint ensures WAL is synced)
@@ -704,18 +715,20 @@ export class DatabaseManager {
 
     sql += ` ORDER BY mtime DESC`;
     
-    // Apply pagination (offset + limit) only if explicitly provided
-    if (offset !== undefined && offset !== null && offset > 0) {
+    // Apply pagination.
+    // SQLite expects LIMIT before OFFSET; if OFFSET is provided without LIMIT, use LIMIT -1.
+    const hasLimit = limit !== undefined && limit !== null && limit > 0;
+    const hasOffset = offset !== undefined && offset !== null && offset > 0;
+
+    if (hasLimit) {
+      sql += ` LIMIT ${limit}`;
+    } else if (hasOffset) {
+      sql += ` LIMIT -1`;
+    }
+
+    if (hasOffset) {
       sql += ` OFFSET ${offset}`;
     }
-    
-    // Apply limit only if explicitly specified
-    // If limit is undefined/null, don't add LIMIT clause (get all files)
-    // If limit is 0 or negative, don't add LIMIT clause (get all files)
-    if (limit !== undefined && limit !== null && limit > 0) {
-      sql += ` LIMIT ${limit}`;
-    }
-    // No LIMIT clause = get all files
 
     const stmt = db.prepare(sql);
     const rows = stmt.all(...params) as Array<{
@@ -806,9 +819,7 @@ export class DatabaseManager {
   }>> {
     const db = this.ensureReady();
     
-    // Check if tags column exists
-    const tableInfo = db.prepare(`PRAGMA table_info(file_content)`).all() as Array<{ name: string }>;
-    const hasTagsColumn = tableInfo.some(col => col.name === 'tags');
+    const hasTagsColumn = this.hasFileContentTagsColumn();
     
     const searchQuery = query.trim().toLowerCase();
     if (searchQuery.length === 0) {
@@ -1875,6 +1886,264 @@ export class DatabaseManager {
   }
 
   /**
+   * Get direct file children placements for a virtual folder path.
+   * Returns only files exactly one level below the given virtual path.
+   */
+  async getDirectVirtualFilePlacements(virtualPath: string, sourceId?: number): Promise<VirtualPlacement[]> {
+    const db = this.ensureReady();
+
+    const normalizedPath = virtualPath === '/' ? '/' : (virtualPath.endsWith('/') ? virtualPath : virtualPath + '/');
+    const relativeStartIndex = normalizedPath.length + 1; // SQLite substr is 1-based
+
+    let sql = `
+      SELECT vp.id, vp.file_id, vp.virtual_path, vp.tags, vp.confidence, vp.reason, vp.planner_version, vp.created_at
+      FROM virtual_placements vp
+    `;
+
+    const params: Array<number | string> = [];
+
+    if (sourceId !== undefined) {
+      const source = await this.getSourceById(sourceId);
+      if (!source) {
+        return [];
+      }
+
+      const sourceIds: number[] = [sourceId];
+      if (source.parent_source_id) {
+        sourceIds.push(source.parent_source_id);
+      }
+
+      sql += `
+        INNER JOIN files f ON vp.file_id = f.file_id
+        WHERE f.source_id IN (${sourceIds.map(() => '?').join(',')})
+        AND (f.status IS NULL OR f.status = 'present')
+      `;
+      params.push(...sourceIds);
+    } else {
+      sql += ` WHERE 1 = 1`;
+    }
+
+    sql += `
+      AND vp.virtual_path LIKE ?
+      AND substr(vp.virtual_path, ?) NOT LIKE '%/%'
+      ORDER BY vp.virtual_path
+    `;
+    params.push(`${normalizedPath}%`, relativeStartIndex);
+
+    const rows = db.prepare(sql).all(...params) as Array<{
+      id: number;
+      file_id: string;
+      virtual_path: string;
+      tags: string;
+      confidence: number;
+      reason: string;
+      planner_version: string;
+      created_at: number;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      file_id: row.file_id,
+      virtual_path: row.virtual_path,
+      tags: row.tags,
+      confidence: row.confidence,
+      reason: row.reason,
+      planner_version: row.planner_version,
+      created_at: row.created_at,
+    }));
+  }
+
+  /**
+   * Get direct folder child paths for a virtual folder path.
+   * Returns unique folder paths exactly one level below the given virtual path.
+   */
+  async getDirectVirtualFolderPaths(virtualPath: string, sourceId?: number): Promise<string[]> {
+    const db = this.ensureReady();
+
+    const normalizedPath = virtualPath === '/' ? '/' : (virtualPath.endsWith('/') ? virtualPath : virtualPath + '/');
+    const relativeStartIndex = normalizedPath.length + 1; // SQLite substr is 1-based
+
+    let sql = `
+      SELECT DISTINCT
+        (? || substr(substr(vp.virtual_path, ?), 1, instr(substr(vp.virtual_path, ?), '/') - 1)) as folder_path
+      FROM virtual_placements vp
+    `;
+
+    const params: Array<number | string> = [normalizedPath, relativeStartIndex, relativeStartIndex];
+
+    if (sourceId !== undefined) {
+      const source = await this.getSourceById(sourceId);
+      if (!source) {
+        return [];
+      }
+
+      const sourceIds: number[] = [sourceId];
+      if (source.parent_source_id) {
+        sourceIds.push(source.parent_source_id);
+      }
+
+      sql += `
+        INNER JOIN files f ON vp.file_id = f.file_id
+        WHERE f.source_id IN (${sourceIds.map(() => '?').join(',')})
+        AND (f.status IS NULL OR f.status = 'present')
+      `;
+      params.push(...sourceIds);
+    } else {
+      sql += ` WHERE 1 = 1`;
+    }
+
+    sql += `
+      AND vp.virtual_path LIKE ?
+      AND substr(vp.virtual_path, ?) LIKE '%/%'
+      ORDER BY folder_path
+    `;
+    params.push(`${normalizedPath}%`, relativeStartIndex);
+
+    const rows = db.prepare(sql).all(...params) as Array<{ folder_path: string }>;
+    return rows.map((row) => row.folder_path);
+  }
+
+  /**
+   * Get file records by file_id list with optional source filtering.
+   * Uses chunking to stay under SQLite variable limits.
+   */
+  async getFileRecordsByIds(fileIds: string[], sourceId?: number): Promise<FileRecord[]> {
+    const db = this.ensureReady();
+
+    const uniqueFileIds = Array.from(new Set(fileIds));
+    if (uniqueFileIds.length === 0) {
+      return [];
+    }
+
+    let sourceIds: number[] = [];
+    if (sourceId !== undefined) {
+      const source = await this.getSourceById(sourceId);
+      if (!source) {
+        return [];
+      }
+      sourceIds = [sourceId];
+      if (source.parent_source_id) {
+        sourceIds.push(source.parent_source_id);
+      }
+    }
+
+    const maxFileIdsPerChunk = Math.max(1, SQLITE_MAX_VARIABLES - sourceIds.length);
+    const rows: Array<{
+      id: number;
+      file_id: string;
+      path: string;
+      name: string;
+      extension: string;
+      size: number;
+      mtime: number;
+      source_id: number;
+      relative_path: string | null;
+      parent_path: string | null;
+      created_at: number;
+      updated_at: number;
+    }> = [];
+
+    for (let i = 0; i < uniqueFileIds.length; i += maxFileIdsPerChunk) {
+      const chunk = uniqueFileIds.slice(i, i + maxFileIdsPerChunk);
+      const chunkPlaceholders = chunk.map(() => '?').join(',');
+
+      let sql = `
+        SELECT id, file_id, path, name, extension, size, mtime, source_id, relative_path, parent_path, created_at, updated_at
+        FROM files
+        WHERE file_id IN (${chunkPlaceholders})
+        AND (status IS NULL OR status = 'present')
+      `;
+      const params: Array<string | number> = [...chunk];
+
+      if (sourceIds.length > 0) {
+        sql += ` AND source_id IN (${sourceIds.map(() => '?').join(',')})`;
+        params.push(...sourceIds);
+      }
+
+      const chunkRows = db.prepare(sql).all(...params) as typeof rows;
+      rows.push(...chunkRows);
+    }
+
+    return rows.map((row) => ({
+      id: row.id,
+      file_id: row.file_id,
+      path: row.path,
+      name: row.name,
+      extension: row.extension,
+      size: row.size,
+      mtime: row.mtime,
+      source_id: row.source_id,
+      relative_path: row.relative_path,
+      parent_path: row.parent_path,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    }));
+  }
+
+  /**
+   * Get all file records that have virtual placements.
+   * Useful for virtual tree construction without exposing raw DB access.
+   */
+  async getFileRecordsForVirtualPlacements(sourceId?: number): Promise<FileRecord[]> {
+    const db = this.ensureReady();
+
+    let sql = `
+      SELECT
+        f.id, f.file_id, f.path, f.name, f.extension, f.size, f.mtime,
+        f.source_id, f.relative_path, f.parent_path, f.created_at, f.updated_at
+      FROM virtual_placements vp
+      INNER JOIN files f ON vp.file_id = f.file_id
+      WHERE (f.status IS NULL OR f.status = 'present')
+    `;
+    const params: number[] = [];
+
+    if (sourceId !== undefined) {
+      const source = await this.getSourceById(sourceId);
+      if (!source) {
+        return [];
+      }
+
+      const sourceIds: number[] = [sourceId];
+      if (source.parent_source_id) {
+        sourceIds.push(source.parent_source_id);
+      }
+
+      sql += ` AND f.source_id IN (${sourceIds.map(() => '?').join(',')})`;
+      params.push(...sourceIds);
+    }
+
+    const rows = db.prepare(sql).all(...params) as Array<{
+      id: number;
+      file_id: string;
+      path: string;
+      name: string;
+      extension: string;
+      size: number;
+      mtime: number;
+      source_id: number;
+      relative_path: string | null;
+      parent_path: string | null;
+      created_at: number;
+      updated_at: number;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      file_id: row.file_id,
+      path: row.path,
+      name: row.name,
+      extension: row.extension,
+      size: row.size,
+      mtime: row.mtime,
+      source_id: row.source_id,
+      relative_path: row.relative_path,
+      parent_path: row.parent_path,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    }));
+  }
+
+  /**
    * Get only top-level virtual placements (one level deep: /FolderName/file.ext).
    * Optimized for building initial folder structure without loading all 220k+ placements.
    * 
@@ -2023,9 +2292,7 @@ export class DatabaseManager {
       metadataJson = truncated ? JSON.stringify(truncated) : null;
     }
 
-    // Check if tags column exists (for migration compatibility)
-    const tableInfo = db.prepare(`PRAGMA table_info(file_content)`).all() as Array<{ name: string }>;
-    const hasTagsColumn = tableInfo.some(col => col.name === 'tags');
+    const hasTagsColumn = this.hasFileContentTagsColumn();
     const tagsJson = tags ? JSON.stringify(tags) : null;
     
     if (hasTagsColumn) {
@@ -2095,9 +2362,7 @@ export class DatabaseManager {
     error_message: string | null;
   } | null> {
     const db = this.ensureReady();
-    // Check if tags column exists
-    const tableInfo = db.prepare(`PRAGMA table_info(file_content)`).all() as Array<{ name: string }>;
-    const hasTagsColumn = tableInfo.some(col => col.name === 'tags');
+    const hasTagsColumn = this.hasFileContentTagsColumn();
     
     const selectFields = hasTagsColumn
       ? 'file_id, content_type, extracted_text, summary, keywords, tags, metadata, extracted_at, extractor_version, error_message'
@@ -2111,15 +2376,20 @@ export class DatabaseManager {
     return row || null;
   }
 
-  async getFilesWithoutContent(sourceId?: number): Promise<string[]> {
+  async getFilesNeedingContent(sourceId?: number): Promise<string[]> {
     const db = this.ensureReady();
     
     let sql = `
       SELECT f.file_id
       FROM files f
       LEFT JOIN file_content fc ON f.file_id = fc.file_id
-      WHERE fc.file_id IS NULL
-      AND (f.status IS NULL OR f.status = 'present')
+      WHERE (f.status IS NULL OR f.status = 'present')
+      AND (
+        fc.file_id IS NULL OR
+        fc.extracted_at IS NULL OR
+        fc.error_message IS NOT NULL OR
+        f.mtime > fc.extracted_at
+      )
     `;
     
     const params: number[] = [];
@@ -2130,6 +2400,10 @@ export class DatabaseManager {
     
     const rows = db.prepare(sql).all(...params) as Array<{ file_id: string }>;
     return rows.map(row => row.file_id);
+  }
+
+  async getFilesWithoutContent(sourceId?: number): Promise<string[]> {
+    return this.getFilesNeedingContent(sourceId);
   }
 
   // ============================================================================
@@ -2145,9 +2419,7 @@ export class DatabaseManager {
   async getFileCardsBySource(sourceId: number, limit?: number): Promise<FileCard[]> {
     const db = this.ensureReady();
 
-    // Check if tags column exists on file_content for migration compatibility
-    const tableInfo = db.prepare(`PRAGMA table_info(file_content)`).all() as Array<{ name: string }>;
-    const hasTagsColumn = tableInfo.some(col => col.name === 'tags');
+    const hasTagsColumn = this.hasFileContentTagsColumn();
 
     const selectFields = hasTagsColumn
       ? `

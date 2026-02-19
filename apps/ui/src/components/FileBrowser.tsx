@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { FileIcon } from './FileIcon';
 import { FolderIcon } from './FolderIcon';
+import { useInfiniteScroll } from '../hooks/useInfiniteScroll';
 
 interface FileBrowserProps {
   folders: FolderRecord[];
   files: FileRecord[];
   isLoading: boolean;
+  hasMoreFiles?: boolean;
+  isLoadingMoreFiles?: boolean;
   currentPath: string | null;
   isSearching: boolean;
   selectedFileId?: string | null; // File ID to highlight/select
@@ -16,6 +19,7 @@ interface FileBrowserProps {
   onFileRightClick?: (file: FileRecord) => void;
   onFileCardClick?: (file: FileRecord) => void;
   onNavigateUp: () => void;
+  onLoadMoreFiles?: () => void;
 }
 
 function formatFileSize(bytes: number): string {
@@ -38,6 +42,8 @@ export function FileBrowser({
   folders,
   files,
   isLoading,
+  hasMoreFiles = false,
+  isLoadingMoreFiles = false,
   currentPath,
   isSearching,
   selectedFileId,
@@ -48,6 +54,7 @@ export function FileBrowser({
   onFileRightClick,
   onFileCardClick,
   onNavigateUp,
+  onLoadMoreFiles,
 }: FileBrowserProps) {
   const handleFolderDoubleClick = useCallback(
     (folder: FolderRecord) => {
@@ -113,6 +120,14 @@ export function FileBrowser({
     onFolderClick(folder);
   }, [onFileSelect, onFolderClick]);
 
+  const setScrollContainerRef = useInfiniteScroll({
+    hasMore: hasMoreFiles,
+    isLoading: isLoading || isLoadingMoreFiles,
+    onLoadMore: () => {
+      onLoadMoreFiles?.();
+    },
+  });
+
   if (isLoading) {
     return (
       <div className="file-list-container">
@@ -124,7 +139,7 @@ export function FileBrowser({
   const isEmpty = folders.length === 0 && files.length === 0;
 
   return (
-    <div className="file-list-container" onClick={handleContainerClick}>
+    <div className="file-list-container" ref={setScrollContainerRef} onClick={handleContainerClick}>
       {/* Breadcrumb / Navigate Up */}
       {currentPath !== null && (
         <div className="breadcrumb">
@@ -211,10 +226,14 @@ export function FileBrowser({
             </div>
           ))}
 
-          {/* File count indicator */}
+          {/* File count / paging indicator */}
           {files.length > 0 && (
             <div className="file-list-end">
-              Showing {files.length.toLocaleString()} file{files.length !== 1 ? 's' : ''}
+              {isLoadingMoreFiles
+                ? 'Loading more files...'
+                : hasMoreFiles
+                ? `Showing ${files.length.toLocaleString()} files. Scroll to load more...`
+                : `Showing ${files.length.toLocaleString()} file${files.length !== 1 ? 's' : ''}`}
             </div>
           )}
         </div>

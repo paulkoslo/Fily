@@ -8,6 +8,7 @@ declare global {
     path: string;
     enabled: boolean;
     created_at: number;
+    parent_source_id?: number | null;
   }
 
   interface FolderRecord {
@@ -177,6 +178,9 @@ declare global {
     fileCount?: number;
     folderCount?: number;
     virtualPlacementCount?: number;
+    fileContentCount?: number;
+    eventCount?: number;
+    childSourceCount?: number;
     sourceName?: string;
     sourcePath?: string;
     error?: string;
@@ -440,7 +444,7 @@ declare global {
     getVirtualChildren: (request: GetVirtualChildrenRequest) => Promise<GetVirtualChildrenResponse>;
     runPlanner: (request: RunPlannerRequest) => Promise<RunPlannerResponse>;
     onPlannerProgress: (callback: (progress: PlannerProgress) => void) => () => void;
-    runOptimizer: (request: RunPlannerRequest) => Promise<RunOptimizerResponse>;
+    runOptimizer: (request: RunOptimizerRequest) => Promise<RunOptimizerResponse>;
     onOptimizerProgress: (callback: (progress: OptimizerProgress) => void) => () => void;
     getApiKeyStatus: () => Promise<GetApiKeyStatusResponse>;
     saveApiKey: (request: SaveApiKeyRequest) => Promise<SaveApiKeyResponse>;

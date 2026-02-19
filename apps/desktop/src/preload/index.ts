@@ -41,6 +41,12 @@ import {
   GetVirtualTreeResponseSchema,
   GetVirtualChildrenRequestSchema,
   GetVirtualChildrenResponseSchema,
+  RunPlannerRequestSchema,
+  RunPlannerResponseSchema,
+  PlannerProgressSchema,
+  RunOptimizerRequestSchema,
+  RunOptimizerResponseSchema,
+  OptimizerProgressSchema,
   GetApiKeyStatusResponseSchema,
   SaveApiKeyRequestSchema,
   SaveApiKeyResponseSchema,
@@ -83,6 +89,12 @@ import {
   type GetVirtualTreeResponse,
   type GetVirtualChildrenRequest,
   type GetVirtualChildrenResponse,
+  type RunPlannerRequest,
+  type RunPlannerResponse,
+  type PlannerProgress,
+  type RunOptimizerRequest,
+  type RunOptimizerResponse,
+  type OptimizerProgress,
   type GetApiKeyStatusResponse,
   type SaveApiKeyRequest,
   type SaveApiKeyResponse,
@@ -91,66 +103,6 @@ import {
   type SaveLLMModelRequest,
   type SaveLLMModelResponse,
 } from '@virtual-finder/core';
-
-type RunPlannerRequest = {
-  sourceId?: number;
-};
-
-type RunPlannerResponse = {
-  success: boolean;
-  filesPlanned: number;
-  error?: string;
-};
-
-type PlannerProgress = {
-  status: 'planning' | 'storing' | 'done' | 'error';
-  filesTotal: number;
-  filesPlanned: number;
-  message: string;
-};
-
-const RunPlannerResponseSchema = z.object({
-  success: z.boolean(),
-  filesPlanned: z.number(),
-  error: z.string().optional(),
-});
-
-const PlannerProgressSchema = z.object({
-  status: z.enum(['planning', 'storing', 'done', 'error']),
-  filesTotal: z.number(),
-  filesPlanned: z.number(),
-  message: z.string(),
-});
-
-type RunOptimizerRequest = {
-  sourceId?: number;
-};
-
-type RunOptimizerResponse = {
-  success: boolean;
-  filesOptimized: number;
-  error?: string;
-};
-
-type OptimizerProgress = {
-  status: 'optimizing' | 'done' | 'error';
-  filesTotal: number;
-  filesOptimized: number;
-  message: string;
-};
-
-const RunOptimizerResponseSchema = z.object({
-  success: z.boolean(),
-  filesOptimized: z.number(),
-  error: z.string().optional(),
-});
-
-const OptimizerProgressSchema = z.object({
-  status: z.enum(['optimizing', 'done', 'error']),
-  filesTotal: z.number(),
-  filesOptimized: z.number(),
-  message: z.string(),
-});
 
 /**
  * Type-safe IPC wrapper with zod validation.
@@ -488,8 +440,8 @@ const api = {
    */
   runPlanner: (request: RunPlannerRequest): Promise<RunPlannerResponse> => {
     return invoke(
-      (IPC_CHANNELS as any).RUN_PLANNER,
-      null,
+      IPC_CHANNELS.RUN_PLANNER,
+      RunPlannerRequestSchema,
       RunPlannerResponseSchema,
       request
     );
@@ -507,10 +459,10 @@ const api = {
         console.error('Invalid planner progress from main process:', progress);
       }
     };
-    ipcRenderer.on((IPC_CHANNELS as any).PLANNER_PROGRESS, handler);
+    ipcRenderer.on(IPC_CHANNELS.PLANNER_PROGRESS, handler);
     // Return unsubscribe function
     return () => {
-      ipcRenderer.removeListener((IPC_CHANNELS as any).PLANNER_PROGRESS, handler);
+      ipcRenderer.removeListener(IPC_CHANNELS.PLANNER_PROGRESS, handler);
     };
   },
 
@@ -519,8 +471,8 @@ const api = {
    */
   runOptimizer: (request: RunOptimizerRequest): Promise<RunOptimizerResponse> => {
     return invoke(
-      (IPC_CHANNELS as any).RUN_OPTIMIZER,
-      null,
+      IPC_CHANNELS.RUN_OPTIMIZER,
+      RunOptimizerRequestSchema,
       RunOptimizerResponseSchema,
       request
     );
@@ -538,10 +490,10 @@ const api = {
         console.error('Invalid optimizer progress from main process:', progress);
       }
     };
-    ipcRenderer.on((IPC_CHANNELS as any).OPTIMIZER_PROGRESS, handler);
+    ipcRenderer.on(IPC_CHANNELS.OPTIMIZER_PROGRESS, handler);
     // Return unsubscribe function
     return () => {
-      ipcRenderer.removeListener((IPC_CHANNELS as any).OPTIMIZER_PROGRESS, handler);
+      ipcRenderer.removeListener(IPC_CHANNELS.OPTIMIZER_PROGRESS, handler);
     };
   },
 

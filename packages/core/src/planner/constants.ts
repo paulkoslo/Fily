@@ -52,6 +52,7 @@ export const API_VISION_MAX_TOKENS = 20000; // Max tokens for vision API calls
 export const WORKER_POOL_DEFAULT_MAX_WORKERS = 80; // Default concurrent workers
 export const WORKER_POOL_MAX_ITERATIONS = 10000; // Safety limit for queue waiting
 export const WORKER_POOL_CHECK_INTERVAL_MS = 50; // How often to check queue
+export const PIPELINE_WORKER_POOL_MAX_WORKERS = 50; // Default for extraction/planner execution pipelines
 
 // ============================================================================
 // FILE SIZE LIMITS

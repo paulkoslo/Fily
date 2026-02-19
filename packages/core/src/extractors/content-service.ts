@@ -5,7 +5,7 @@ import type { FileProcessingResult } from '../agents/summary-tag-agent';
 import { WorkerPool } from '../agents/worker-pool';
 import type { FileRecord, ExtractionProgress } from '../ipc/contracts';
 import { truncateMetadata } from './extractor-utils';
-import * as fs from 'fs';
+import { PIPELINE_WORKER_POOL_MAX_WORKERS } from '../planner/constants';
 
 export class ContentService {
   private extractorManager: ExtractorManager;
@@ -15,7 +15,7 @@ export class ContentService {
 
   constructor(db: DatabaseManager) {
     this.db = db;
-    this.workerPool = new WorkerPool(50); // Max 50 concurrent AI workers
+    this.workerPool = new WorkerPool(PIPELINE_WORKER_POOL_MAX_WORKERS);
     this.extractorManager = new ExtractorManager(this.workerPool); // Pass worker pool for AudioExtractor
     
     // Create orchestrator - progress callback will be set per-extraction

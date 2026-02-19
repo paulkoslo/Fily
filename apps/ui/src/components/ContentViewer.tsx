@@ -54,9 +54,18 @@ export function ContentViewer({
 
   if (!isOpen) return null;
 
-  const keywords = content?.keywords ? JSON.parse(content.keywords) : [];
-  const tags = content?.tags ? JSON.parse(content.tags) : [];
-  const metadata = content?.metadata ? JSON.parse(content.metadata) : {};
+  const parseJsonSafely = <T,>(value: string | null | undefined, fallback: T): T => {
+    if (!value) return fallback;
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      return fallback;
+    }
+  };
+
+  const keywords = parseJsonSafely<string[]>(content?.keywords, []);
+  const tags = parseJsonSafely<string[]>(content?.tags, []);
+  const metadata = parseJsonSafely<Record<string, unknown>>(content?.metadata, {});
 
   const isCard = variant === 'card';
 

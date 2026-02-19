@@ -8,24 +8,6 @@ interface SearchBarProps {
   sourceId?: number | null;
 }
 
-// Use global SmartSearchResult type from types.d.ts
-type SmartSearchResult = {
-  file_id: string;
-  name: string;
-  path: string;
-  relative_path: string | null;
-  parent_path: string | null;
-  extension: string;
-  size: number;
-  mtime: number;
-  source_id: number;
-  match_type: 'filename' | 'summary' | 'tags';
-  match_score: number;
-  summary: string | null;
-  tags?: string[];
-  virtual_path: string | null;
-};
-
 export const SearchBar = memo(function SearchBar({
   value,
   onChange,

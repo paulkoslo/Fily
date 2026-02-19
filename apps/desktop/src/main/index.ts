@@ -68,12 +68,12 @@ function getRendererUrl(): string {
   return `file://${rendererPath}`;
 }
 
-/** Path to app icon (assets/icons/icon.icns). Used in dev for dock/window; in prod the .app bundle provides the icon. */
+/** Path to app icon (assets/icons/Icon.icns). Used in dev for dock/window; in prod the .app bundle provides the icon. */
 function getIconPath(): string {
   if (isDev()) {
-    return path.join(__dirname, '..', '..', 'assets', 'icons', 'icon.icns');
+    return path.join(__dirname, '..', '..', 'assets', 'icons', 'Icon.icns');
   }
-  return path.join(process.resourcesPath, 'assets', 'icons', 'icon.icns');
+  return path.join(process.resourcesPath, 'assets', 'icons', 'Icon.icns');
 }
 
 async function createWindow(): Promise<void> {

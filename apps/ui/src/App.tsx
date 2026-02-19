@@ -1,23 +1,28 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Sidebar } from './components/Sidebar';
-import { FileBrowser } from './components/FileBrowser';
-import { LibraryView } from './components/LibraryView';
-import { VirtualLibraryView } from './components/VirtualLibraryView';
-import { VirtualTreeView } from './components/VirtualTreeView';
-import { SearchBar } from './components/SearchBar';
+import { AppToolbar } from './components/AppToolbar';
+import { AppProgressBanners } from './components/AppProgressBanners';
+import { AppContentView } from './components/AppContentView';
+import { AppStatusBar } from './components/AppStatusBar';
 import { Settings } from './components/Settings';
-import { SettingsButton } from './components/SettingsButton';
-import { MemoryInfo } from './components/MemoryInfo';
 import { ContentViewer } from './components/ContentViewer';
 import { ApiKeyModal } from './components/ApiKeyModal';
-import { ProgressBar } from './components/ProgressBar';
 import { getTheme, getThemeClassName, defaultThemeId, getAllThemeIds } from './themes';
+
+const FILE_PAGE_SIZE = 200;
+
+function buildFilePageContextKey(sourceId: number, parentPath: string | null, query?: string): string {
+  return `${sourceId}|${parentPath ?? ''}|${query ?? ''}`;
+}
 
 function App() {
   const [sources, setSources] = useState<Source[]>([]);
   const [selectedSourceId, setSelectedSourceId] = useState<number | null>(null);
   const [folders, setFolders] = useState<FolderRecord[]>([]);
   const [files, setFiles] = useState<FileRecord[]>([]);
+  const [filesOffset, setFilesOffset] = useState(0);
+  const [hasMoreFiles, setHasMoreFiles] = useState(false);
+  const [isLoadingMoreFiles, setIsLoadingMoreFiles] = useState(false);
   const [currentPath, setCurrentPath] = useState<string | null>(null);
   const [pathHistory, setPathHistory] = useState<(string | null)[]>([]);
   const [searchInput, setSearchInput] = useState(''); // Search input (independent from file viewer)
@@ -55,6 +60,8 @@ function App() {
   const [isApiKeyMutating, setIsApiKeyMutating] = useState(false);
   const [statusBarPath, setStatusBarPath] = useState<string[]>([]);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null); // Selected file for future selection/moving features
+  const filesPageContextRef = useRef<{ sourceId: number; parentPath: string | null; query?: string } | null>(null);
+  const filesPageContextKeyRef = useRef<string>('');
 
   const loadSources = async () => {
     try {
@@ -76,13 +83,22 @@ function App() {
 
   const loadContent = useCallback(async (sourceId: number, parentPath: string | null, query?: string) => {
     setIsLoading(true);
+    setIsLoadingMoreFiles(false);
     setError(null);
     try {
+      const normalizedQuery = query?.trim() || undefined;
+      const isSearchMode = Boolean(normalizedQuery);
+
       // If searching, search both files and folders across all directories
-      if (query && query.trim()) {
+      if (isSearchMode) {
         const [foldersResponse, filesResponse] = await Promise.all([
-          window.api.listFolders({ sourceId, query }),
-          window.api.listFiles({ sourceId, query }), // No limit - load all files
+          window.api.listFolders({ sourceId, query: normalizedQuery }),
+          window.api.listFiles({
+            sourceId,
+            query: normalizedQuery,
+            limit: FILE_PAGE_SIZE,
+            offset: 0,
+          }),
         ]);
 
         if (foldersResponse.success) {
@@ -93,15 +109,28 @@ function App() {
 
         if (filesResponse.success) {
           setFiles(filesResponse.files);
+          setFilesOffset(filesResponse.files.length);
+          setHasMoreFiles(filesResponse.files.length === FILE_PAGE_SIZE);
+          filesPageContextRef.current = { sourceId, parentPath: null, query: normalizedQuery };
+          filesPageContextKeyRef.current = buildFilePageContextKey(sourceId, null, normalizedQuery);
         } else {
           setError(filesResponse.error || 'Failed to load files');
           setFiles([]);
+          setFilesOffset(0);
+          setHasMoreFiles(false);
+          filesPageContextRef.current = null;
+          filesPageContextKeyRef.current = '';
         }
       } else {
         // Load folders and files for current path
         const [foldersResponse, filesResponse] = await Promise.all([
           window.api.listFolders({ sourceId, parentPath }),
-          window.api.listFiles({ sourceId, parentPath }), // No limit - load all files
+          window.api.listFiles({
+            sourceId,
+            parentPath,
+            limit: FILE_PAGE_SIZE,
+            offset: 0,
+          }),
         ]);
 
         if (foldersResponse.success) {
@@ -113,19 +142,79 @@ function App() {
 
         if (filesResponse.success) {
           setFiles(filesResponse.files);
+          setFilesOffset(filesResponse.files.length);
+          setHasMoreFiles(filesResponse.files.length === FILE_PAGE_SIZE);
+          filesPageContextRef.current = { sourceId, parentPath, query: undefined };
+          filesPageContextKeyRef.current = buildFilePageContextKey(sourceId, parentPath, undefined);
         } else {
           setError(filesResponse.error || 'Failed to load files');
           setFiles([]);
+          setFilesOffset(0);
+          setHasMoreFiles(false);
+          filesPageContextRef.current = null;
+          filesPageContextKeyRef.current = '';
         }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load content');
       setFolders([]);
       setFiles([]);
+      setFilesOffset(0);
+      setHasMoreFiles(false);
+      filesPageContextRef.current = null;
+      filesPageContextKeyRef.current = '';
     } finally {
       setIsLoading(false);
     }
   }, []);
+
+  const loadMoreFiles = useCallback(async () => {
+    if (isLoading || isLoadingMoreFiles || !hasMoreFiles) {
+      return;
+    }
+
+    const context = filesPageContextRef.current;
+    const contextKey = filesPageContextKeyRef.current;
+    if (!context || !contextKey) {
+      return;
+    }
+
+    setIsLoadingMoreFiles(true);
+    try {
+      const response = await window.api.listFiles({
+        sourceId: context.sourceId,
+        parentPath: context.parentPath,
+        query: context.query,
+        limit: FILE_PAGE_SIZE,
+        offset: filesOffset,
+      });
+
+      // Ignore stale responses from old contexts (source/path changed mid-request)
+      if (filesPageContextKeyRef.current !== contextKey) {
+        return;
+      }
+
+      if (!response.success) {
+        setError(response.error || 'Failed to load more files');
+        setHasMoreFiles(false);
+        return;
+      }
+
+      const newFiles = response.files;
+      setFiles((prev) => {
+        const existing = new Set(prev.map((f) => f.file_id));
+        const appended = newFiles.filter((f) => !existing.has(f.file_id));
+        return appended.length > 0 ? [...prev, ...appended] : prev;
+      });
+      setFilesOffset((prev) => prev + newFiles.length);
+      setHasMoreFiles(newFiles.length === FILE_PAGE_SIZE);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load more files');
+      setHasMoreFiles(false);
+    } finally {
+      setIsLoadingMoreFiles(false);
+    }
+  }, [filesOffset, hasMoreFiles, isLoading, isLoadingMoreFiles]);
 
 
   // Subscribe to scan progress updates
@@ -658,6 +747,55 @@ function App() {
     // Search is independent - doesn't affect file viewer until result is clicked
   }, []);
 
+  const handleSearchResultSelect = useCallback(
+    async (result: SmartSearchResult) => {
+      try {
+        const targetSourceId = result.source_id;
+
+        if (result.source_id !== selectedSourceId) {
+          setSelectedSourceId(result.source_id);
+        }
+
+        if (viewMode === 'filesystem') {
+          let targetPath: string | null = null;
+          if (result.parent_path !== null && result.parent_path !== undefined) {
+            targetPath = result.parent_path;
+          } else if (result.relative_path) {
+            const pathParts = result.relative_path.split('/').filter((p) => p.length > 0);
+            targetPath = pathParts.length > 1 ? pathParts.slice(0, -1).join('/') : null;
+          }
+
+          setCurrentPath(targetPath);
+          setPathHistory([]);
+          await loadContent(targetSourceId, targetPath);
+          setSelectedFileId(result.file_id);
+        } else {
+          if (result.virtual_path) {
+            const pathParts = result.virtual_path.split('/').filter((p) => p.length > 0);
+            if (pathParts.length > 1) {
+              const parentVirtualPath = `/${pathParts.slice(0, -1).join('/')}`;
+              setCurrentVirtualPath(parentVirtualPath);
+              setStatusBarPath(pathParts.slice(0, -1));
+            } else {
+              setCurrentVirtualPath('/');
+              setStatusBarPath([]);
+            }
+          } else {
+            setCurrentVirtualPath('/');
+            setStatusBarPath([]);
+          }
+
+          setSelectedFileId(result.file_id);
+        }
+
+        setSearchInput('');
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to navigate to file');
+      }
+    },
+    [selectedSourceId, viewMode, loadContent]
+  );
+
   const handleSourceSelect = useCallback((sourceId: number) => {
     setSelectedSourceId(sourceId);
     setCurrentPath(null);
@@ -1020,424 +1158,72 @@ function App() {
         onToggleWatch={handleToggleWatch}
       />
       <main className="main-panel">
-        <header className="toolbar">
-            <div className="toolbar-view-toggle">
-              <button
-                className={`view-toggle-button ${viewMode === 'filesystem' ? 'active' : ''}`}
-                onClick={handleViewModeToggle}
-                disabled={isScanning || isExtracting}
-                title="Filesystem View"
-              >
-                Filesystem
-              </button>
-              <button
-                className={`view-toggle-button ${viewMode === 'virtual' ? 'active' : ''}`}
-                onClick={handleViewModeToggle}
-                disabled={isScanning || isExtracting}
-                title="Virtual View"
-              >
-                Virtual
-              </button>
-            </div>
-            <div className="toolbar-layout-dropdown" onClick={(e) => e.stopPropagation()}>
-              <button
-                className="layout-dropdown-button"
-                onClick={() => setIsLayoutMenuOpen((o) => !o)}
-                title={layoutMode === 'library' ? 'Column view' : 'List view'}
-              >
-                {layoutMode === 'library' ? (
-                  <svg className="layout-icon" width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden>
-                    <rect x="1" y="2" width="2" height="10" rx="0.5" />
-                    <rect x="6" y="2" width="2" height="10" rx="0.5" />
-                    <rect x="11" y="2" width="2" height="10" rx="0.5" />
-                  </svg>
-                ) : (
-                  <svg className="layout-icon" width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden>
-                    <rect x="2" y="2" width="10" height="2" rx="0.5" />
-                    <rect x="2" y="6" width="10" height="2" rx="0.5" />
-                    <rect x="2" y="10" width="10" height="2" rx="0.5" />
-                  </svg>
-                )}
-                <span className="layout-dropdown-arrow">▾</span>
-              </button>
-              {isLayoutMenuOpen && (
-                <div className="layout-dropdown-menu">
-                  <button
-                    onClick={() => {
-                      handleLayoutModeChange('library');
-                      setIsLayoutMenuOpen(false);
-                    }}
-                    className={layoutMode === 'library' ? 'selected' : ''}
-                    title="Column view"
-                  >
-                    <svg className="layout-icon" width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden>
-                      <rect x="1" y="2" width="2" height="10" rx="0.5" />
-                      <rect x="6" y="2" width="2" height="10" rx="0.5" />
-                      <rect x="11" y="2" width="2" height="10" rx="0.5" />
-                    </svg>
-                  </button>
-                  <button
-                    onClick={() => {
-                      handleLayoutModeChange('list');
-                      setIsLayoutMenuOpen(false);
-                    }}
-                    className={layoutMode === 'list' ? 'selected' : ''}
-                    title="List view"
-                  >
-                    <svg className="layout-icon" width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden>
-                      <rect x="2" y="2" width="10" height="2" rx="0.5" />
-                      <rect x="2" y="6" width="10" height="2" rx="0.5" />
-                      <rect x="2" y="10" width="10" height="2" rx="0.5" />
-                    </svg>
-                  </button>
-                </div>
-              )}
-            </div>
-            <SearchBar
-              value={searchInput}
-              onChange={handleSearchChange}
-              onResultSelect={async (result) => {
-                // Navigate to the file location and select it (stay in current view)
-                try {
-                  // Determine target source ID (may need to switch sources)
-                  const targetSourceId = result.source_id !== selectedSourceId ? result.source_id : selectedSourceId;
-                  
-                  // Switch to the file's source if different
-                  if (result.source_id !== selectedSourceId) {
-                    setSelectedSourceId(result.source_id);
-                  }
+        <AppToolbar
+          viewMode={viewMode}
+          layoutMode={layoutMode}
+          isLayoutMenuOpen={isLayoutMenuOpen}
+          isManualMenuOpen={isManualMenuOpen}
+          selectedSourceId={selectedSourceId}
+          searchInput={searchInput}
+          isSettingsOpen={isSettingsOpen}
+          isScanning={isScanning}
+          isExtracting={isExtracting}
+          isOrganizing={isOrganizing}
+          isOptimizing={isOptimizing}
+          onViewModeToggle={handleViewModeToggle}
+          onToggleLayoutMenu={() => setIsLayoutMenuOpen((open) => !open)}
+          onLayoutModeChange={handleLayoutModeChange}
+          onCloseLayoutMenu={() => setIsLayoutMenuOpen(false)}
+          onSearchChange={handleSearchChange}
+          onSearchResultSelect={handleSearchResultSelect}
+          onFullOrganize={handleFullOrganize}
+          onToggleManualMenu={() => setIsManualMenuOpen((open) => !open)}
+          onCloseManualMenu={() => setIsManualMenuOpen(false)}
+          onScanOnly={handleScan}
+          onExtractOnly={handleExtractContent}
+          onOrganizeOnly={() => handleOrganize(true)}
+          onOptimizeOnly={handleOptimize}
+          onSettingsToggle={handleSettingsToggle}
+        />
 
-                  if (viewMode === 'filesystem') {
-                    // Filesystem view: navigate to the file's parent folder
-                    // Use parent_path if available, otherwise extract from relative_path
-                    let targetPath: string | null = null;
-                    if (result.parent_path !== null && result.parent_path !== undefined) {
-                      targetPath = result.parent_path;
-                    } else if (result.relative_path) {
-                      // Extract parent path from relative_path
-                      const pathParts = result.relative_path.split('/').filter(p => p.length > 0);
-                      if (pathParts.length > 1) {
-                        // File is in a subfolder - navigate to parent folder
-                        targetPath = pathParts.slice(0, -1).join('/');
-                      } else {
-                        // File is in root - navigate to root
-                        targetPath = null;
-                      }
-                    }
-                    
-                    // Set path and load content immediately
-                    setCurrentPath(targetPath);
-                    setPathHistory([]);
-                    
-                    // Explicitly load content for the new path (don't rely on useEffect timing)
-                    await loadContent(targetSourceId, targetPath);
-                    
-                    // Set selected file AFTER content is loaded
-                    setSelectedFileId(result.file_id);
-                  } else {
-                    // Virtual view: navigate to the file's virtual folder
-                    if (result.virtual_path) {
-                      // Extract parent path from virtual_path (remove filename)
-                      const pathParts = result.virtual_path.split('/').filter(p => p.length > 0);
-                      if (pathParts.length > 1) {
-                        // File is in a virtual folder - navigate to parent folder
-                        const parentVirtualPath = '/' + pathParts.slice(0, -1).join('/');
-                        setCurrentVirtualPath(parentVirtualPath);
-                        setStatusBarPath(pathParts.slice(0, -1));
-                        // VirtualTreeView's useEffect will automatically load children for this path
-                      } else {
-                        // File is in root virtual folder
-                        setCurrentVirtualPath('/');
-                        setStatusBarPath([]);
-                        // VirtualTreeView will show root children automatically
-                      }
-                    } else {
-                      // No virtual_path - file not organized yet, stay in virtual view but show message
-                      // User can switch to filesystem view manually if needed
-                      setCurrentVirtualPath('/');
-                      setStatusBarPath([]);
-                    }
-                    
-                    // Set selected file (VirtualTreeView will handle highlighting)
-                    setSelectedFileId(result.file_id);
-                  }
+        <AppProgressBanners
+          error={error}
+          onDismissError={dismissError}
+          scanProgress={scanProgress}
+          extractionProgress={extractionProgress}
+          plannerProgress={plannerProgress}
+          optimizerProgress={optimizerProgress}
+        />
 
-                  // Clear search input after navigation
-                  setSearchInput('');
-                } catch (err) {
-                  setError(err instanceof Error ? err.message : 'Failed to navigate to file');
-                }
-              }}
-              disabled={selectedSourceId === null || isScanning || isExtracting}
-              sourceId={selectedSourceId}
-            />
-            <div className="toolbar-actions">
-            <button
-              className="pipeline-button"
-              onClick={handleFullOrganize}
-              disabled={
-                selectedSourceId === null || isScanning || isExtracting || isOrganizing
-              }
-            >
-              {isScanning || isExtracting || isOrganizing
-                ? 'Organizing…'
-                : 'Organize'}
-            </button>
-            <div className="toolbar-manual">
-              <button
-                className="manual-button"
-                disabled={
-                  selectedSourceId === null || isScanning || isExtracting || isOrganizing || isOptimizing
-                }
-                onClick={() => setIsManualMenuOpen((open) => !open)}
-              >
-                Manual ▾
-              </button>
-              {isManualMenuOpen && (
-                <div className="manual-menu">
-                  <button
-                    onClick={async () => {
-                      setIsManualMenuOpen(false);
-                      await handleScan();
-                    }}
-                    disabled={
-                      selectedSourceId === null ||
-                      isScanning ||
-                      isExtracting ||
-                      isOrganizing
-                    }
-                  >
-                    Scan only
-                  </button>
-                  <button
-                    onClick={async () => {
-                      setIsManualMenuOpen(false);
-                      await handleExtractContent();
-                    }}
-                    disabled={
-                      selectedSourceId === null ||
-                      isScanning ||
-                      isExtracting ||
-                      isOrganizing
-                    }
-                  >
-                    Extract Content only
-                  </button>
-                  <button
-                    onClick={async () => {
-                      setIsManualMenuOpen(false);
-                      await handleOrganize(true); // Skip optimization for "Organize (AI Taxonomy) only"
-                    }}
-                    disabled={
-                      selectedSourceId === null ||
-                      isScanning ||
-                      isExtracting ||
-                      isOrganizing ||
-                      isOptimizing
-                    }
-                  >
-                    Organize (AI Taxonomy) only
-                  </button>
-                  <button
-                    onClick={async () => {
-                      setIsManualMenuOpen(false);
-                      await handleOptimize();
-                    }}
-                    disabled={
-                      selectedSourceId === null ||
-                      isScanning ||
-                      isExtracting ||
-                      isOrganizing ||
-                      isOptimizing
-                    }
-                  >
-                    Optimize only
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-            <div className="toolbar-right">
-              <SettingsButton onClick={handleSettingsToggle} isActive={isSettingsOpen} />
-            </div>
-        </header>
+        <AppContentView
+          viewMode={viewMode}
+          layoutMode={layoutMode}
+          selectedSourceId={selectedSourceId}
+          sources={sources}
+          folders={folders}
+          files={files}
+          isLoading={isLoading}
+          hasMoreFiles={hasMoreFiles}
+          isLoadingMoreFiles={isLoadingMoreFiles}
+          currentPath={currentPath}
+          selectedFileId={selectedFileId}
+          virtualTree={virtualTree}
+          currentVirtualPath={currentVirtualPath}
+          onFileSelect={setSelectedFileId}
+          onFolderClick={handleFolderClick}
+          onFolderDoubleClick={handleFolderDoubleClick}
+          onFileDoubleClick={handleFileDoubleClick}
+          onFileRightClick={handleFileRightClick}
+          onFileCardClick={handleFileCardClick}
+          onNavigateUp={handleNavigateUp}
+          onLoadMoreFiles={loadMoreFiles}
+          onLibraryPathChange={handleLibraryPathChange}
+          onVirtualLibraryPathChange={handleVirtualLibraryPathChange}
+          onVirtualPathChange={handleVirtualPathChange}
+          onLoadVirtualChildren={handleLoadVirtualChildren}
+        />
 
-        {/* Error Banner */}
-        {error && (
-          <div className="error-banner">
-            <span className="error-message">{error}</span>
-            <button className="error-dismiss" onClick={dismissError}>
-              Dismiss
-            </button>
-          </div>
-        )}
-
-        {/* Scan Progress */}
-        {scanProgress && scanProgress.status !== 'done' && (
-          <div className="progress-banner">
-            <div className="progress-content">
-              <div className="progress-step-indicator">
-                {scanProgress.step || 'Step 1/3: Scanning files...'}
-              </div>
-              {(scanProgress.filesFound > 0 && scanProgress.status === 'indexing') ? (
-                <div className="progress-details">
-                  <div className="progress-bar-container">
-                    <div
-                      className="progress-bar"
-                      style={{
-                        width: `${Math.round((scanProgress.filesProcessed / scanProgress.filesFound) * 100)}%`,
-                      }}
-                    />
-                  </div>
-                  <span className="progress-count">
-                    {scanProgress.filesProcessed} / {scanProgress.filesFound}
-                  </span>
-                </div>
-              ) : (
-                <div className="progress-details">
-                  <div className="progress-bar-container">
-                    <div className="progress-bar-indeterminate" />
-                  </div>
-                </div>
-              )}
-              <div className="progress-status">
-                <span className="progress-message">{scanProgress.message}</span>
-                {scanProgress.currentFile && (
-                  <span className="progress-current-file" title={scanProgress.currentFile}>
-                    {scanProgress.currentFile}
-                  </span>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Extraction Progress */}
-        {extractionProgress && <ProgressBar progress={extractionProgress} />}
-
-        {/* Planner Progress */}
-        {plannerProgress && (
-          <div className={`progress-banner ${plannerProgress.status === 'done' ? 'progress-complete' : ''}`}>
-            <div className="progress-content">
-              <div className="progress-step-indicator">
-                {plannerProgress.status === 'done' ? '✅ Step 3/3: Complete!' : (plannerProgress.step || 'Step 3/3: Organizing files...')}
-              </div>
-              {plannerProgress.status !== 'done' ? (
-                <div className="progress-details">
-                  <div className="progress-bar-container">
-                    <div className="progress-bar-bouncing" />
-                  </div>
-                </div>
-              ) : null}
-              <div className="progress-status">
-                <span className="progress-message">{plannerProgress.message}</span>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Optimizer Progress */}
-        {optimizerProgress && (
-          <div className={`progress-banner ${optimizerProgress.status === 'done' ? 'progress-complete' : ''}`}>
-            <div className="progress-content">
-              <div className="progress-step-indicator">
-                {optimizerProgress.status === 'done' ? '✅ Optimize: Complete!' : (optimizerProgress.step || 'Optimizing low-confidence files...')}
-              </div>
-              {optimizerProgress.status !== 'done' ? (
-                <div className="progress-details">
-                  <div className="progress-bar-container">
-                    <div className="progress-bar-bouncing" />
-                  </div>
-                </div>
-              ) : null}
-              <div className="progress-status">
-                <span className="progress-message">{optimizerProgress.message}</span>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {viewMode === 'filesystem' ? (
-          selectedSourceId !== null && layoutMode === 'library' ? (
-            <LibraryView
-              sourceId={selectedSourceId}
-              sourceName={sources.find((s) => s.id === selectedSourceId)?.name ?? ''}
-              selectedFileId={selectedFileId}
-              navigateToPath={viewMode === 'filesystem' ? currentPath : undefined}
-              onFileSelect={setSelectedFileId}
-              onPathChange={handleLibraryPathChange}
-              onFileDoubleClick={handleFileDoubleClick}
-              onFileRightClick={handleFileRightClick}
-              onFileCardClick={handleFileCardClick}
-            />
-          ) : selectedSourceId !== null && layoutMode === 'list' ? (
-            <>
-              {files.length > 0 && (
-                <div style={{ padding: '12px 24px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                  <strong>Tip:</strong> Right-click any file to view its extracted content.
-                </div>
-              )}
-              <FileBrowser
-                folders={folders}
-                files={files}
-                isLoading={isLoading}
-                currentPath={currentPath}
-                isSearching={false}
-                selectedFileId={selectedFileId}
-                onFileSelect={setSelectedFileId}
-                onFolderClick={handleFolderClick}
-                onFolderDoubleClick={handleFolderDoubleClick}
-                onFileDoubleClick={handleFileDoubleClick}
-                onFileRightClick={handleFileRightClick}
-                onFileCardClick={handleFileCardClick}
-                onNavigateUp={handleNavigateUp}
-              />
-            </>
-          ) : (
-            <div className="file-list-empty">Select a source folder to browse.</div>
-          )
-        ) : layoutMode === 'library' ? (
-          <VirtualLibraryView
-            virtualTree={virtualTree}
-            isLoading={isLoading}
-            selectedFileId={selectedFileId}
-            navigateToPath={viewMode === 'virtual' ? currentVirtualPath : undefined}
-            onFileSelect={setSelectedFileId}
-            onPathChange={handleVirtualLibraryPathChange}
-            onFileClick={handleFileDoubleClick}
-            onFileRightClick={handleFileRightClick}
-            onFileCardClick={handleFileCardClick}
-            onLoadChildren={handleLoadVirtualChildren}
-          />
-        ) : (
-          <VirtualTreeView
-            virtualTree={virtualTree}
-            isLoading={isLoading}
-            currentVirtualPath={currentVirtualPath}
-            selectedFileId={selectedFileId}
-            onFileSelect={setSelectedFileId}
-            onFileClick={handleFileDoubleClick}
-            onFileRightClick={handleFileRightClick}
-            onFileCardClick={handleFileCardClick}
-            onPathChange={handleVirtualPathChange}
-            onLoadChildren={handleLoadVirtualChildren}
-          />
-        )}
-
-        <footer className="status-bar">
-          <div className="status-bar-path">
-            {statusBarPath.map((segment, i) => (
-              <span key={i} className="status-bar-path-segment">
-                {i > 0 && <span className="status-bar-path-arrow">›</span>}
-                {segment}
-              </span>
-            ))}
-            {statusBarPath.length === 0 && (
-              <span className="status-bar-path-segment">—</span>
-            )}
-          </div>
-          <MemoryInfo />
-        </footer>
+        <AppStatusBar statusBarPath={statusBarPath} />
       </main>
       <Settings
         isOpen={isSettingsOpen}

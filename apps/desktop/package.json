@@ -28,7 +28,7 @@
     "mac": {
       "category": "public.app-category.productivity",
       "target": "dir",
-      "icon": "assets/icons/icon.icns"
+      "icon": "assets/icons/Icon.icns"
     },
     "directories": {
       "output": "out"
