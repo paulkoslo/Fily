@@ -1,10 +1,13 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
+// Virtual tree tests:
+// verify virtual folders/files are built, sorted, and counted correctly.
 const { VirtualTreeBuilder } = require('../dist/virtual-tree');
 
 const NOW = 1_700_000_000_000;
 
+// Helper to generate consistent FileRecord fixtures.
 function makeFileRecord(id, fileId, name, path, sourceId = 1) {
   const extension = name.includes('.') ? name.split('.').pop() ?? '' : '';
   return {
@@ -23,6 +26,8 @@ function makeFileRecord(id, fileId, name, path, sourceId = 1) {
   };
 }
 
+// Some tree paths intentionally include missing file records.
+// Those branches log warnings, which are expected for these tests.
 function withMutedConsoleWarn(fn) {
   const originalWarn = console.warn;
   console.warn = () => {};
@@ -33,6 +38,7 @@ function withMutedConsoleWarn(fn) {
   }
 }
 
+// Full build path: planner outputs -> nested tree + stats.
 test('build creates sorted tree and computes file counts', () => {
   const builder = new VirtualTreeBuilder();
   const records = [
@@ -98,6 +104,7 @@ test('build creates sorted tree and computes file counts', () => {
   assert.equal(stats.totalFiles, 3);
 });
 
+// Fast top-level-only build used for lazy-loading scenarios.
 test('buildTopLevelOnly builds only first level with counts', () => {
   const builder = new VirtualTreeBuilder();
   const placements = [
@@ -148,6 +155,7 @@ test('buildTopLevelOnly builds only first level with counts', () => {
   assert.equal(work.children.length, 0);
 });
 
+// Build from DB placement rows, including JSON tag parsing.
 test('buildFromPlacements parses tags and skips missing file records', () => {
   const builder = new VirtualTreeBuilder();
   const records = [makeFileRecord(1, 'f1', 'one.md', '/tmp/one.md')];

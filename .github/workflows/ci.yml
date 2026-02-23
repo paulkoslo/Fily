@@ -1,6 +1,9 @@
+# Simple CI pipeline:
+# on each push/PR, verify the project installs, builds, and tests.
 name: CI
 
 on:
+  # Run checks for code pushed directly and for pull requests.
   pull_request:
   push:
 
@@ -8,26 +11,32 @@ permissions:
   contents: read
 
 concurrency:
+  # If you push multiple times quickly, cancel older runs for the same branch.
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build-and-test:
+    # Use a clean Linux runner to simulate a fresh machine.
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
     steps:
+      # Download repository code into the runner.
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Install Node and enable npm dependency cache for faster runs.
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
 
+      # Install exact dependency versions from package-lock.json.
       - name: Install dependencies
         run: npm ci
 
+      # Run the single command that builds + tests this repo.
       - name: Run CI checks
         run: npm run ci:check

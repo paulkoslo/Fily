@@ -1,6 +1,8 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
+// Rule-matcher tests:
+// verify deterministic "file -> rule -> folder" behavior.
 const {
   calculateRuleSpecificity,
   computeRuleMatchCounts,
@@ -11,6 +13,7 @@ const {
 
 const NOW = 1_700_000_000_000;
 
+// Build a realistic file card with optional overrides for each scenario.
 function makeCard(fileId, overrides = {}) {
   return {
     file_id: fileId,
@@ -27,6 +30,7 @@ function makeCard(fileId, overrides = {}) {
   };
 }
 
+// Build a default rule and override only the parts needed by each test case.
 function makeRule(id, overrides = {}) {
   return {
     id,
@@ -37,6 +41,7 @@ function makeRule(id, overrides = {}) {
   };
 }
 
+// Check matching behavior for full matches, failures, and empty rules.
 test('ruleMatchesWithQuality evaluates conditions and quality correctly', () => {
   const card = makeCard('file-1', {
     path: '/Projects/Q1/finance-summary.pdf',
@@ -68,6 +73,7 @@ test('ruleMatchesWithQuality evaluates conditions and quality correctly', () => 
   assert.equal(emptyResult.matchQuality, 0.5);
 });
 
+// Best rule should be selected by score (priority + specificity).
 test('findBestRule picks highest priority + specificity score', () => {
   const card = makeCard('file-2', {
     path: '/Projects/Q1/report.pdf',
@@ -96,6 +102,7 @@ test('findBestRule picks highest priority + specificity score', () => {
   assert.equal(calculateRuleSpecificity(highSpecificityRule), 1);
 });
 
+// End-to-end deterministic check: assignment + per-rule match counts.
 test('getFileAssignments and computeRuleMatchCounts produce deterministic output', () => {
   const folders = [
     {

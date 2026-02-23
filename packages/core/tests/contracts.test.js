@@ -1,6 +1,8 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
+// Contract tests:
+// verify that runtime schemas accept valid payloads and reject invalid payloads.
 const {
   FileCardSchema,
   PlannerOutputSchema,
@@ -8,6 +10,7 @@ const {
   SmartSearchFilesRequestSchema,
 } = require('../dist/ipc/contracts');
 
+// Happy-path PlannerOutput should pass validation.
 test('PlannerOutputSchema accepts valid payload', () => {
   const parsed = PlannerOutputSchema.safeParse({
     file_id: 'abc123',
@@ -20,6 +23,7 @@ test('PlannerOutputSchema accepts valid payload', () => {
   assert.equal(parsed.success, true);
 });
 
+// Confidence must stay between 0 and 1.
 test('PlannerOutputSchema rejects invalid confidence', () => {
   const parsed = PlannerOutputSchema.safeParse({
     file_id: 'abc123',
@@ -32,6 +36,7 @@ test('PlannerOutputSchema rejects invalid confidence', () => {
   assert.equal(parsed.success, false);
 });
 
+// FileCard is the planner's input shape; this checks required fields are enforced.
 test('FileCardSchema enforces required fields', () => {
   const parsed = FileCardSchema.safeParse({
     file_id: 'file-1',
@@ -49,6 +54,7 @@ test('FileCardSchema enforces required fields', () => {
   assert.equal(parsed.success, true);
 });
 
+// Request shape should accept valid fields and reject wrong types.
 test('RunPlannerRequestSchema allows optional sourceId and skipOptimization', () => {
   const valid = RunPlannerRequestSchema.safeParse({
     sourceId: 123,
@@ -62,6 +68,7 @@ test('RunPlannerRequestSchema allows optional sourceId and skipOptimization', ()
   assert.equal(invalid.success, false);
 });
 
+// Smart search requests need an actual query string.
 test('SmartSearchFilesRequestSchema requires a non-empty query', () => {
   const valid = SmartSearchFilesRequestSchema.safeParse({
     query: 'report',

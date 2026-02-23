@@ -1,17 +1,21 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
+// Utility tests:
+// verify truncation and timeout helpers behave safely with edge cases.
 const {
   truncateMetadata,
   truncateToWordLimit,
   withTimeout,
 } = require('../dist/extractors/extractor-utils');
 
+// Short input should remain untouched.
 test('truncateToWordLimit keeps short text unchanged', () => {
   const text = 'one two three';
   assert.equal(truncateToWordLimit(text, 10), text);
 });
 
+// Long input should be trimmed and include a clear truncation marker.
 test('truncateToWordLimit truncates long text and appends marker', () => {
   const text = Array.from({ length: 12 }, (_, i) => `word${i + 1}`).join(' ');
   const truncated = truncateToWordLimit(text, 5);
@@ -20,6 +24,7 @@ test('truncateToWordLimit truncates long text and appends marker', () => {
   assert.match(truncated, /\[\.\.\. content truncated to 1000 words \.\.\.\]/);
 });
 
+// Large metadata objects should be reduced to a safe size while keeping key fields.
 test('truncateMetadata limits oversized metadata and preserves core fields', () => {
   const metadata = {
     extension: 'pdf',
@@ -40,6 +45,8 @@ test('truncateMetadata limits oversized metadata and preserves core fields', () 
   assert.ok(JSON.stringify(result).length <= 300);
 });
 
+// Circular objects cannot be JSON stringified.
+// The helper should fall back to minimal metadata instead of throwing.
 test('truncateMetadata returns minimal object when serialization throws', () => {
   const circular = {
     extension: 'txt',
@@ -47,6 +54,7 @@ test('truncateMetadata returns minimal object when serialization throws', () => 
   };
   circular.self = circular;
 
+  // Mute expected warning output so test logs stay clean.
   const originalWarn = console.warn;
   console.warn = () => {};
   try {
@@ -60,6 +68,7 @@ test('truncateMetadata returns minimal object when serialization throws', () => 
   }
 });
 
+// If work finishes before timeout, return the result normally.
 test('withTimeout resolves when promise completes before timeout', async () => {
   const result = await withTimeout(
     new Promise((resolve) => {
@@ -73,6 +82,7 @@ test('withTimeout resolves when promise completes before timeout', async () => {
   assert.equal(result, 'ok');
 });
 
+// If work exceeds timeout, reject with the timeout error.
 test('withTimeout rejects when promise exceeds timeout', async () => {
   await assert.rejects(
     withTimeout(
