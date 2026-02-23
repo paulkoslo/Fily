@@ -22,7 +22,10 @@
     "start": "cd apps/desktop && npm run start",
     "rebuild": "npx electron-rebuild -f -w better-sqlite3 --version=27.3.0",
     "clean": "rm -rf node_modules packages/*/dist apps/*/dist apps/*/node_modules packages/*/node_modules",
-    "benchmark": "npm run benchmark -w packages/core"
+    "benchmark": "npm run benchmark -w packages/core",
+    "test": "npm run build:core && npm run test -w packages/core",
+    "test:watch": "npm run test:watch -w packages/core",
+    "ci:check": "npm run build:ui && npm run test"
   },
   "devDependencies": {
     "@electron/rebuild": "^3.7.2",

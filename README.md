@@ -87,6 +87,30 @@ cd apps/desktop && npm run package
 
 This creates a `.app` bundle in `apps/desktop/out/`.
 
+## Testing and CI
+
+This repo uses a simple CI pipeline in `.github/workflows/ci.yml`.
+
+On every push and pull request, CI runs:
+
+1. `npm ci` (clean install)
+2. `npm run build:ui` (TypeScript + Vite build for UI)
+3. `npm run test` (builds core TypeScript, then runs core unit tests)
+
+### Local CI command
+
+Run exactly what CI runs:
+
+```bash
+npm run ci:check
+```
+
+### Notes on AI testing
+
+- CI tests do **not** call OpenAI/OpenRouter.
+- Current tests focus on deterministic logic (schema validation, rule matching, tree building, extraction utilities).
+- Real AI smoke tests can be added later as a separate nightly/manual workflow.
+
 ## Configuration
 
 ### LLM API Configuration
