@@ -9,7 +9,10 @@ const MAX_COLUMN_WIDTH = 400;
 interface ColumnData {
   folders: FolderRecord[];
   files: FileRecord[];
-  isLoading: boolean;
+}
+
+function getColumnPathKey(pathValue: string | null): string {
+  return pathValue ?? '__root__';
 }
 
 interface LibraryViewProps {
@@ -46,7 +49,8 @@ export function LibraryView({
   // columnPaths[i] = parent path for column i; null = root
   const [columnPaths, setColumnPaths] = useState<(string | null)[]>([null]);
   const [columnWidths, setColumnWidths] = useState<number[]>([DEFAULT_COLUMN_WIDTH]);
-  const [columnData, setColumnData] = useState<ColumnData[]>([{ folders: [], files: [], isLoading: true }]);
+  const [columnDataByPath, setColumnDataByPath] = useState<Record<string, ColumnData>>({});
+  const [loadingPathKeys, setLoadingPathKeys] = useState<Set<string>>(new Set());
   const [selectedFolderInColumn, setSelectedFolderInColumn] = useState<(string | null)[]>([]);
   const [selectedFile, setSelectedFile] = useState<FileRecord | null>(null);
   const [isResizing, setIsResizing] = useState(false);
@@ -62,33 +66,59 @@ export function LibraryView({
       return {
         folders: foldersRes.success ? foldersRes.folders : [],
         files: filesRes.success ? filesRes.files : [],
-        isLoading: false,
       };
     } catch {
-      return { folders: [], files: [], isLoading: false };
+      return { folders: [], files: [] };
     }
   }, [sourceId]);
 
-  // Load data for each column when columnPaths changes
+  // Load only missing columns, keep cached columns to avoid full reload flicker.
   useEffect(() => {
     let cancelled = false;
-    const loadAll = async () => {
-      const data: ColumnData[] = [];
-      for (let i = 0; i < columnPaths.length; i++) {
-        data.push({ folders: [], files: [], isLoading: true });
-        setColumnData([...data]);
-      }
-      for (let i = 0; i < columnPaths.length; i++) {
+    const missingPaths = columnPaths.filter((pathValue) => {
+      const key = getColumnPathKey(pathValue);
+      return !columnDataByPath[key] && !loadingPathKeys.has(key);
+    });
+
+    if (missingPaths.length === 0) {
+      return;
+    }
+
+    const missingKeys = missingPaths.map((pathValue) => getColumnPathKey(pathValue));
+    setLoadingPathKeys((prev) => {
+      const next = new Set(prev);
+      missingKeys.forEach((key) => next.add(key));
+      return next;
+    });
+
+    Promise.all(
+      missingPaths.map(async (pathValue) => ({
+        key: getColumnPathKey(pathValue),
+        data: await loadColumn(pathValue),
+      }))
+    )
+      .then((results) => {
         if (cancelled) return;
-        const result = await loadColumn(columnPaths[i]);
-        if (cancelled) return;
-        data[i] = result;
-        setColumnData([...data]);
-      }
+        setColumnDataByPath((prev) => {
+          const next = { ...prev };
+          for (const result of results) {
+            next[result.key] = result.data;
+          }
+          return next;
+        });
+      })
+      .finally(() => {
+        setLoadingPathKeys((prev) => {
+          const next = new Set(prev);
+          missingKeys.forEach((key) => next.delete(key));
+          return next;
+        });
+      });
+
+    return () => {
+      cancelled = true;
     };
-    loadAll();
-    return () => { cancelled = true; };
-  }, [JSON.stringify(columnPaths), sourceId, loadColumn]);
+  }, [columnPaths, loadColumn]);
 
   // Sync columnWidths when columnPaths changes
   useEffect(() => {
@@ -106,6 +136,8 @@ export function LibraryView({
   useEffect(() => {
     setColumnPaths([null]);
     setColumnWidths([DEFAULT_COLUMN_WIDTH]);
+    setColumnDataByPath({});
+    setLoadingPathKeys(new Set());
     setSelectedFolderInColumn([]);
     setSelectedFile(null);
   }, [sourceId]);
@@ -147,21 +179,19 @@ export function LibraryView({
       return;
     }
 
-    // Find the file in the last column (where files should be)
-    const lastColumnIndex = columnData.length - 1;
-    if (lastColumnIndex >= 0) {
-      const file = columnData[lastColumnIndex]?.files.find(f => f.file_id === selectedFileId);
-      if (file) {
-        setSelectedFile(file);
-        // Scroll to file after a small delay to ensure DOM is updated
-        setTimeout(() => {
-          if (selectedFileRef.current) {
-            selectedFileRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          }
-        }, 200);
-      }
+    const lastPath = columnPaths[columnPaths.length - 1] ?? null;
+    const lastKey = getColumnPathKey(lastPath);
+    const file = columnDataByPath[lastKey]?.files.find((f) => f.file_id === selectedFileId);
+    if (file) {
+      setSelectedFile(file);
+      // Scroll to file after a small delay to ensure DOM is updated
+      setTimeout(() => {
+        if (selectedFileRef.current) {
+          selectedFileRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }, 200);
     }
-  }, [selectedFileId, columnData]);
+  }, [selectedFileId, columnPaths, columnDataByPath]);
 
   // Resize handling
   const handleResizeStart = useCallback((columnIndex: number, e: React.MouseEvent) => {
@@ -263,8 +293,10 @@ export function LibraryView({
 
   return (
     <div className="library-view" onClick={handleLibraryViewClick}>
-      {columnPaths.map((_, colIndex) => {
-        const data = columnData[colIndex] || { folders: [], files: [], isLoading: false };
+      {columnPaths.map((pathValue, colIndex) => {
+        const pathKey = getColumnPathKey(pathValue);
+        const data = columnDataByPath[pathKey] || { folders: [], files: [] };
+        const isLoadingColumn = loadingPathKeys.has(pathKey) && !columnDataByPath[pathKey];
         const selectedFolderName = selectedFolderInColumn[colIndex];
         const isLast = colIndex === columnPaths.length - 1;
         const width = columnWidths[colIndex] ?? DEFAULT_COLUMN_WIDTH;
@@ -275,7 +307,7 @@ export function LibraryView({
               style={isLast ? undefined : { width: width, minWidth: width, maxWidth: width }}
             >
               <div className="library-column-content">
-              {data.isLoading ? (
+              {isLoadingColumn ? (
                 <div className="library-column-loading">Loading...</div>
               ) : data.folders.length === 0 && data.files.length === 0 ? (
                 <div className="library-column-empty">Empty</div>

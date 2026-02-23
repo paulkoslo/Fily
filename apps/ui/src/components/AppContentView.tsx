@@ -1,11 +1,13 @@
 import { FileBrowser } from './FileBrowser';
+import { IconView } from './IconView';
 import { LibraryView } from './LibraryView';
 import { VirtualLibraryView } from './VirtualLibraryView';
+import { VirtualIconView } from './VirtualIconView';
 import { VirtualTreeView } from './VirtualTreeView';
 
 interface AppContentViewProps {
   viewMode: 'filesystem' | 'virtual';
-  layoutMode: 'library' | 'list';
+  layoutMode: 'library' | 'list' | 'icon';
   selectedSourceId: number | null;
   sources: Source[];
   folders: FolderRecord[];
@@ -113,6 +115,29 @@ export function AppContentView({
       );
     }
 
+    if (selectedSourceId !== null && layoutMode === 'icon') {
+      return (
+        <IconView
+          folders={folders}
+          files={files}
+          isLoading={isLoading}
+          hasMoreFiles={hasMoreFiles}
+          isLoadingMoreFiles={isLoadingMoreFiles}
+          currentPath={currentPath}
+          isSearching={false}
+          selectedFileId={selectedFileId}
+          onFileSelect={onFileSelect}
+          onFolderClick={onFolderClick}
+          onFolderDoubleClick={onFolderDoubleClick}
+          onFileDoubleClick={onFileDoubleClick}
+          onFileRightClick={onFileRightClick}
+          onFileCardClick={onFileCardClick}
+          onNavigateUp={onNavigateUp}
+          onLoadMoreFiles={onLoadMoreFiles}
+        />
+      );
+    }
+
     return <div className="file-list-empty">Select a source folder to browse.</div>;
   }
 
@@ -128,6 +153,23 @@ export function AppContentView({
         onFileClick={onFileDoubleClick}
         onFileRightClick={onFileRightClick}
         onFileCardClick={onFileCardClick}
+        onLoadChildren={onLoadVirtualChildren}
+      />
+    );
+  }
+
+  if (layoutMode === 'icon') {
+    return (
+      <VirtualIconView
+        virtualTree={virtualTree}
+        isLoading={isLoading}
+        currentVirtualPath={currentVirtualPath}
+        selectedFileId={selectedFileId}
+        onFileSelect={onFileSelect}
+        onFileClick={onFileDoubleClick}
+        onFileRightClick={onFileRightClick}
+        onFileCardClick={onFileCardClick}
+        onPathChange={onVirtualPathChange}
         onLoadChildren={onLoadVirtualChildren}
       />
     );

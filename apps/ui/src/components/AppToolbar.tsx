@@ -3,7 +3,7 @@ import { SettingsButton } from './SettingsButton';
 
 interface AppToolbarProps {
   viewMode: 'filesystem' | 'virtual';
-  layoutMode: 'library' | 'list';
+  layoutMode: 'library' | 'list' | 'icon';
   isLayoutMenuOpen: boolean;
   isManualMenuOpen: boolean;
   selectedSourceId: number | null;
@@ -15,7 +15,7 @@ interface AppToolbarProps {
   isOptimizing: boolean;
   onViewModeToggle: () => void;
   onToggleLayoutMenu: () => void;
-  onLayoutModeChange: (mode: 'library' | 'list') => void;
+  onLayoutModeChange: (mode: 'library' | 'list' | 'icon') => void;
   onCloseLayoutMenu: () => void;
   onSearchChange: (query: string) => void;
   onSearchResultSelect: (result: SmartSearchResult) => void | Promise<void>;
@@ -58,6 +58,38 @@ export function AppToolbar({
 }: AppToolbarProps) {
   const pipelineBusy = isScanning || isExtracting || isOrganizing;
   const manualBusy = pipelineBusy || isOptimizing;
+  const layoutTitle = layoutMode === 'library' ? 'Column view' : layoutMode === 'list' ? 'List view' : 'Icon view';
+
+  const renderLayoutIcon = (mode: 'library' | 'list' | 'icon') => {
+    if (mode === 'library') {
+      return (
+        <svg className="layout-icon" width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden>
+          <rect x="1" y="2" width="2" height="10" rx="0.5" />
+          <rect x="6" y="2" width="2" height="10" rx="0.5" />
+          <rect x="11" y="2" width="2" height="10" rx="0.5" />
+        </svg>
+      );
+    }
+
+    if (mode === 'list') {
+      return (
+        <svg className="layout-icon" width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden>
+          <rect x="2" y="2" width="10" height="2" rx="0.5" />
+          <rect x="2" y="6" width="10" height="2" rx="0.5" />
+          <rect x="2" y="10" width="10" height="2" rx="0.5" />
+        </svg>
+      );
+    }
+
+    return (
+      <svg className="layout-icon" width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden>
+        <rect x="1.5" y="1.5" width="4" height="4" rx="0.75" />
+        <rect x="8.5" y="1.5" width="4" height="4" rx="0.75" />
+        <rect x="1.5" y="8.5" width="4" height="4" rx="0.75" />
+        <rect x="8.5" y="8.5" width="4" height="4" rx="0.75" />
+      </svg>
+    );
+  };
 
   return (
     <header className="toolbar">
@@ -84,21 +116,9 @@ export function AppToolbar({
         <button
           className="layout-dropdown-button"
           onClick={onToggleLayoutMenu}
-          title={layoutMode === 'library' ? 'Column view' : 'List view'}
+          title={layoutTitle}
         >
-          {layoutMode === 'library' ? (
-            <svg className="layout-icon" width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden>
-              <rect x="1" y="2" width="2" height="10" rx="0.5" />
-              <rect x="6" y="2" width="2" height="10" rx="0.5" />
-              <rect x="11" y="2" width="2" height="10" rx="0.5" />
-            </svg>
-          ) : (
-            <svg className="layout-icon" width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden>
-              <rect x="2" y="2" width="10" height="2" rx="0.5" />
-              <rect x="2" y="6" width="10" height="2" rx="0.5" />
-              <rect x="2" y="10" width="10" height="2" rx="0.5" />
-            </svg>
-          )}
+          {renderLayoutIcon(layoutMode)}
           <span className="layout-dropdown-arrow">▾</span>
         </button>
 
@@ -112,11 +132,7 @@ export function AppToolbar({
               className={layoutMode === 'library' ? 'selected' : ''}
               title="Column view"
             >
-              <svg className="layout-icon" width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden>
-                <rect x="1" y="2" width="2" height="10" rx="0.5" />
-                <rect x="6" y="2" width="2" height="10" rx="0.5" />
-                <rect x="11" y="2" width="2" height="10" rx="0.5" />
-              </svg>
+              {renderLayoutIcon('library')}
             </button>
             <button
               onClick={() => {
@@ -126,11 +142,17 @@ export function AppToolbar({
               className={layoutMode === 'list' ? 'selected' : ''}
               title="List view"
             >
-              <svg className="layout-icon" width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden>
-                <rect x="2" y="2" width="10" height="2" rx="0.5" />
-                <rect x="2" y="6" width="10" height="2" rx="0.5" />
-                <rect x="2" y="10" width="10" height="2" rx="0.5" />
-              </svg>
+              {renderLayoutIcon('list')}
+            </button>
+            <button
+              onClick={() => {
+                onLayoutModeChange('icon');
+                onCloseLayoutMenu();
+              }}
+              className={layoutMode === 'icon' ? 'selected' : ''}
+              title="Icon view"
+            >
+              {renderLayoutIcon('icon')}
             </button>
           </div>
         )}
