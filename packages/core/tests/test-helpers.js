@@ -109,11 +109,17 @@ async function insertIndexedFile(
     size = 100,
   }
 ) {
+  const source = await db.getSourceById(sourceId);
+  if (!source) {
+    throw new Error(`Source not found: ${sourceId}`);
+  }
+
   const ext =
     extension || (name.includes('.') ? name.split('.').pop().toLowerCase() : '');
-  const filePath = `/tmp/fily-test-files/${fileId}/${name}`;
-  const parentPath = relativePath && relativePath.includes('/')
-    ? relativePath.split('/').slice(0, -1).join('/')
+  const normalizedRelativePath = relativePath || name;
+  const filePath = path.join(source.path, normalizedRelativePath);
+  const parentPath = normalizedRelativePath.includes('/')
+    ? normalizedRelativePath.split('/').slice(0, -1).join('/')
     : null;
 
   await db.upsertFile(
@@ -124,7 +130,7 @@ async function insertIndexedFile(
     size,
     mtime,
     sourceId,
-    relativePath,
+    normalizedRelativePath,
     parentPath
   );
 
