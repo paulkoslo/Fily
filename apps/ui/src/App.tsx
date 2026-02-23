@@ -35,7 +35,7 @@ function App() {
   const [watchingSourceIds, setWatchingSourceIds] = useState<Set<number>>(new Set());
   const refreshTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [viewMode, setViewMode] = useState<'filesystem' | 'virtual'>('filesystem');
-  const [layoutMode, setLayoutMode] = useState<'library' | 'list'>('library');
+  const [layoutMode, setLayoutMode] = useState<'library' | 'list' | 'icon'>('library');
   const [virtualTree, setVirtualTree] = useState<VirtualNode | null>(null);
   const [currentVirtualPath, setCurrentVirtualPath] = useState<string>('/');
   const [isExtracting, setIsExtracting] = useState(false);
@@ -338,8 +338,9 @@ function App() {
         return next;
       });
 
-      // Auto-refresh file list if this is the current source (debounced)
-      if (event.sourceId === selectedSourceId) {
+      // Auto-refresh file list if this is the current source (debounced).
+      // Library view manages its own per-column loading, so skip full list reload there.
+      if (event.sourceId === selectedSourceId && viewMode === 'filesystem' && layoutMode !== 'library') {
         // Clear existing timeout
         if (refreshTimeoutRef.current) {
           clearTimeout(refreshTimeoutRef.current);
@@ -359,7 +360,7 @@ function App() {
         clearTimeout(refreshTimeoutRef.current);
       }
     };
-  }, [selectedSourceId, currentPath, loadContent]);
+  }, [selectedSourceId, currentPath, loadContent, viewMode, layoutMode]);
 
   // Load watch status on mount and when sources change
   useEffect(() => {
@@ -459,12 +460,12 @@ function App() {
   // NOTE: This useEffect handles normal navigation. Search result clicks explicitly call loadContent
   // and set selectedFileId, so we don't clear selection here to avoid race conditions.
   useEffect(() => {
-    if (selectedSourceId !== null && viewMode === 'filesystem') {
+    if (selectedSourceId !== null && viewMode === 'filesystem' && layoutMode !== 'library') {
       loadContent(selectedSourceId, currentPath); // Remove searchQuery - search is independent
       // Don't clear selectedFileId here - let search handler manage it, or clear only on manual navigation
       // We'll clear it when viewMode changes instead (see useEffect below)
     }
-  }, [selectedSourceId, currentPath, loadContent, viewMode]);
+  }, [selectedSourceId, currentPath, loadContent, viewMode, layoutMode]);
 
   // Clear selection when switching view modes
   useEffect(() => {
@@ -767,7 +768,9 @@ function App() {
 
           setCurrentPath(targetPath);
           setPathHistory([]);
-          await loadContent(targetSourceId, targetPath);
+          if (layoutMode !== 'library') {
+            await loadContent(targetSourceId, targetPath);
+          }
           setSelectedFileId(result.file_id);
         } else {
           if (result.virtual_path) {
@@ -793,13 +796,15 @@ function App() {
         setError(err instanceof Error ? err.message : 'Failed to navigate to file');
       }
     },
-    [selectedSourceId, viewMode, loadContent]
+    [selectedSourceId, viewMode, loadContent, layoutMode]
   );
 
   const handleSourceSelect = useCallback((sourceId: number) => {
     setSelectedSourceId(sourceId);
     setCurrentPath(null);
     setPathHistory([]);
+    setCurrentVirtualPath('/');
+    setStatusBarPath([]);
     setSearchInput(''); // Clear search input when switching sources
   }, []);
 
@@ -1080,7 +1085,7 @@ function App() {
     localStorage.setItem('fily-view-mode', newMode);
   }, [viewMode]);
 
-  const handleLayoutModeChange = useCallback((mode: 'library' | 'list') => {
+  const handleLayoutModeChange = useCallback((mode: 'library' | 'list' | 'icon') => {
     setLayoutMode(mode);
     localStorage.setItem('fily-layout-mode', mode);
   }, []);
@@ -1134,7 +1139,7 @@ function App() {
       setViewMode(savedViewMode);
     }
     const savedLayoutMode = localStorage.getItem('fily-layout-mode');
-    if (savedLayoutMode === 'library' || savedLayoutMode === 'list') {
+    if (savedLayoutMode === 'library' || savedLayoutMode === 'list' || savedLayoutMode === 'icon') {
       setLayoutMode(savedLayoutMode);
     }
   }, []);

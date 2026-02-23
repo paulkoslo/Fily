@@ -42,8 +42,8 @@ export function VirtualLibraryView({
   // columnPaths[i] = path for column i; '/' = root
   const [columnPaths, setColumnPaths] = useState<string[]>(['/']);
   const [columnWidths, setColumnWidths] = useState<number[]>([DEFAULT_COLUMN_WIDTH]);
-  const [columnData, setColumnData] = useState<VirtualNode[][]>([]);
-  const [loadingColumns, setLoadingColumns] = useState<Set<number>>(new Set());
+  const [columnDataByPath, setColumnDataByPath] = useState<Record<string, VirtualNode[]>>({});
+  const [loadingPaths, setLoadingPaths] = useState<Set<string>>(new Set());
   const [selectedFile, setSelectedFile] = useState<FileRecord | null>(null);
   const [isResizing, setIsResizing] = useState(false);
   const resizeRef = useRef<{ columnIndex: number; startX: number; startWidth: number } | null>(null);
@@ -65,6 +65,8 @@ export function VirtualLibraryView({
   useEffect(() => {
     setColumnPaths(['/']);
     setColumnWidths([DEFAULT_COLUMN_WIDTH]);
+    setColumnDataByPath({});
+    setLoadingPaths(new Set());
     setSelectedFile(null);
   }, [virtualTree]);
 
@@ -98,26 +100,23 @@ export function VirtualLibraryView({
       return;
     }
 
-    // Find the file in the last column (where files should be)
-    const lastColumnIndex = columnData.length - 1;
-    if (lastColumnIndex >= 0) {
-      const column = columnData[lastColumnIndex];
-      if (column) {
-        for (const node of column) {
-          if (node.type === 'file' && node.fileRecord?.file_id === selectedFileId) {
-            setSelectedFile(node.fileRecord);
-            // Scroll to file after a small delay to ensure DOM is updated
-            setTimeout(() => {
-              if (selectedFileRef.current) {
-                selectedFileRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
-              }
-            }, 200);
-            break;
-          }
+    const lastPath = columnPaths[columnPaths.length - 1];
+    const column = columnDataByPath[lastPath];
+    if (column) {
+      for (const node of column) {
+        if (node.type === 'file' && node.fileRecord?.file_id === selectedFileId) {
+          setSelectedFile(node.fileRecord);
+          // Scroll to file after a small delay to ensure DOM is updated
+          setTimeout(() => {
+            if (selectedFileRef.current) {
+              selectedFileRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+          }, 200);
+          break;
         }
       }
     }
-  }, [selectedFileId, columnData]);
+  }, [selectedFileId, columnPaths, columnDataByPath]);
 
   const handleResizeStart = useCallback((columnIndex: number, e: React.MouseEvent) => {
     e.preventDefault();
@@ -183,27 +182,45 @@ export function VirtualLibraryView({
     if (!virtualTree) return;
     let cancelled = false;
 
-    const loadAll = async () => {
-      const data: VirtualNode[][] = [];
-      for (let i = 0; i < columnPaths.length; i++) {
-        setLoadingColumns((prev) => new Set(prev).add(i));
-      }
-      for (let i = 0; i < columnPaths.length; i++) {
+    const missingPaths = columnPaths.filter((pathValue) => !columnDataByPath[pathValue] && !loadingPaths.has(pathValue));
+    if (missingPaths.length === 0) {
+      return;
+    }
+
+    setLoadingPaths((prev) => {
+      const next = new Set(prev);
+      missingPaths.forEach((pathValue) => next.add(pathValue));
+      return next;
+    });
+
+    Promise.all(
+      missingPaths.map(async (pathValue) => ({
+        pathValue,
+        children: await getChildrenForPath(pathValue),
+      }))
+    )
+      .then((results) => {
         if (cancelled) return;
-        const children = await getChildrenForPath(columnPaths[i]);
-        if (cancelled) return;
-        data.push(children);
-        setColumnData([...data]);
-        setLoadingColumns((prev) => {
-          const next = new Set(prev);
-          next.delete(i);
+        setColumnDataByPath((prev) => {
+          const next = { ...prev };
+          for (const result of results) {
+            next[result.pathValue] = result.children;
+          }
           return next;
         });
-      }
+      })
+      .finally(() => {
+        setLoadingPaths((prev) => {
+          const next = new Set(prev);
+          missingPaths.forEach((pathValue) => next.delete(pathValue));
+          return next;
+        });
+      });
+
+    return () => {
+      cancelled = true;
     };
-    loadAll();
-    return () => { cancelled = true; };
-  }, [JSON.stringify(columnPaths), virtualTree, getChildrenForPath]);
+  }, [columnPaths, virtualTree, getChildrenForPath]);
 
   useEffect(() => {
     const segments = columnPaths.slice(1).map((p) => p.split('/').pop() ?? '');
@@ -265,9 +282,9 @@ export function VirtualLibraryView({
 
   return (
     <div className="library-view" onClick={handleLibraryViewClick}>
-      {columnPaths.map((_, colIndex) => {
-        const isLoadingCol = loadingColumns.has(colIndex);
-        const nodes = columnData[colIndex] ?? [];
+      {columnPaths.map((pathValue, colIndex) => {
+        const nodes = columnDataByPath[pathValue] ?? [];
+        const isLoadingCol = loadingPaths.has(pathValue) && nodes.length === 0;
         const isLast = colIndex === columnPaths.length - 1;
         const width = columnWidths[colIndex] ?? DEFAULT_COLUMN_WIDTH;
 

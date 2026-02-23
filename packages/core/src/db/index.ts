@@ -213,6 +213,115 @@ export class DatabaseManager {
     };
   }
 
+  private normalizePathForComparison(inputPath: string): string {
+    try {
+      return fs.realpathSync.native(inputPath);
+    } catch {
+      return path.resolve(inputPath);
+    }
+  }
+
+  private isSubPath(candidatePath: string, parentPath: string): boolean {
+    const normalizedCandidate = this.normalizePathForComparison(candidatePath);
+    const normalizedParent = this.normalizePathForComparison(parentPath);
+
+    if (normalizedCandidate === normalizedParent) {
+      return false;
+    }
+
+    return (
+      normalizedCandidate.startsWith(normalizedParent + path.sep) ||
+      normalizedCandidate.toLowerCase().startsWith(normalizedParent.toLowerCase() + path.sep.toLowerCase())
+    );
+  }
+
+  private getRelativePathPrefix(parentPath: string, childPath: string): string | null {
+    const normalizedParent = this.normalizePathForComparison(parentPath);
+    const normalizedChild = this.normalizePathForComparison(childPath);
+    const relative = path.relative(normalizedParent, normalizedChild);
+    if (!relative || relative === '.' || relative.startsWith('..')) {
+      return null;
+    }
+    return relative.split(path.sep).join('/');
+  }
+
+  private isPathWithinOrEqual(candidatePath: string, basePath: string): boolean {
+    const normalizedCandidate = this.normalizePathForComparison(candidatePath);
+    const normalizedBase = this.normalizePathForComparison(basePath);
+
+    if (normalizedCandidate === normalizedBase) {
+      return true;
+    }
+
+    return (
+      normalizedCandidate.startsWith(normalizedBase + path.sep) ||
+      normalizedCandidate.toLowerCase().startsWith(normalizedBase.toLowerCase() + path.sep.toLowerCase())
+    );
+  }
+
+  private normalizeRelativePathForSource(candidatePath: string, sourcePath: string): string | null {
+    let relative = path.relative(sourcePath, candidatePath);
+    if (!relative || relative === '.' || relative.startsWith('..') || path.isAbsolute(relative)) {
+      const normalizedCandidate = this.normalizePathForComparison(candidatePath);
+      const normalizedSource = this.normalizePathForComparison(sourcePath);
+      relative = path.relative(normalizedSource, normalizedCandidate);
+    }
+
+    if (!relative || relative === '.' || relative.startsWith('..') || path.isAbsolute(relative)) {
+      return null;
+    }
+
+    return relative.replace(/\\/g, '/');
+  }
+
+  private normalizeParentPathFromRelative(relativePath: string): string | null {
+    const posixRelative = relativePath.replace(/\\/g, '/');
+    const parent = path.posix.dirname(posixRelative);
+    return parent === '.' ? null : parent;
+  }
+
+  private getPathScopeSql(column: string): string {
+    return `(${column} = ? OR ${column} LIKE ? OR ${column} LIKE ?)`;
+  }
+
+  private getPathScopeParams(sourcePath: string): [string, string, string] {
+    return [sourcePath, `${sourcePath}/%`, `${sourcePath}\\%`];
+  }
+
+  async getNestedChildSources(parentSourceId: number): Promise<Source[]> {
+    const parentSource = await this.getSourceById(parentSourceId);
+    if (!parentSource) {
+      return [];
+    }
+
+    const allSources = await this.getSources();
+    return allSources.filter((source) => source.id !== parentSourceId && this.isSubPath(source.path, parentSource.path));
+  }
+
+  private async getVisibleFileIdsForSource(sourceId: number): Promise<Set<string>> {
+    const db = this.ensureReady();
+    const source = await this.getSourceById(sourceId);
+    if (!source) {
+      return new Set<string>();
+    }
+
+    const rows = db
+      .prepare(`
+        SELECT file_id, path
+        FROM files
+        WHERE (status IS NULL OR status = 'present')
+      `)
+      .all() as Array<{ file_id: string; path: string }>;
+
+    const visibleIds = new Set<string>();
+    for (const row of rows) {
+      if (this.isPathWithinOrEqual(row.path, source.path)) {
+        visibleIds.add(row.file_id);
+      }
+    }
+    return visibleIds;
+  }
+
   /**
    * Find parent sources - sources whose path contains the given source path.
    * Returns sources sorted by path length (longest first, most specific parent first).
@@ -554,36 +663,166 @@ export class DatabaseManager {
    */
   async removeSource(sourceId: number): Promise<void> {
     const db = this.ensureReady();
-    
-    // Delete in correct order to maintain referential integrity:
-    // 1. Delete file_content (extracted content/AI summaries) for files from this source
-    db.prepare(`
-      DELETE FROM file_content 
-      WHERE file_id IN (SELECT file_id FROM files WHERE source_id = ?)
-    `).run(sourceId);
-    
-    // 2. Delete virtual placements (AI tree decisions) for files from this source
-    db.prepare(`
-      DELETE FROM virtual_placements 
-      WHERE file_id IN (SELECT file_id FROM files WHERE source_id = ?)
-    `).run(sourceId);
-    
-    // 3. Delete all files for this source (this will cascade delete file_content and virtual_placements if CASCADE works)
-    db.prepare(`DELETE FROM files WHERE source_id = ?`).run(sourceId);
-    
-    // 4. Delete all folders for this source
-    db.prepare(`DELETE FROM folders WHERE source_id = ?`).run(sourceId);
-    
-    // 5. Delete all events (filesystem watch events) for this source
-    db.prepare(`DELETE FROM events WHERE source_id = ?`).run(sourceId);
-    
-    // 6. Handle child sources: if this source has children (parent_source_id = sourceId), 
-    // we should either delete them too or unlink them. For now, we'll delete child sources.
-    // This ensures complete cleanup - if parent is deleted, children should be too.
-    db.prepare(`DELETE FROM sources WHERE parent_source_id = ?`).run(sourceId);
-    
-    // 7. Finally delete the source itself
-    db.prepare(`DELETE FROM sources WHERE id = ?`).run(sourceId);
+
+    const source = await this.getSourceById(sourceId);
+    if (!source) {
+      return;
+    }
+
+    const allSources = await this.getSources();
+    const remainingSources = allSources.filter((s) => s.id !== sourceId);
+
+    const selectBestOwner = (itemPath: string, excludedSourceId?: number): Source | null => {
+      const candidates = remainingSources
+        .filter((candidate) => candidate.id !== excludedSourceId && this.isPathWithinOrEqual(itemPath, candidate.path))
+        .sort((a, b) => b.path.length - a.path.length);
+      return candidates[0] || null;
+    };
+
+    const fileRows = db
+      .prepare(`
+        SELECT file_id, path
+        FROM files
+        WHERE source_id = ?
+      `)
+      .all(sourceId) as Array<{ file_id: string; path: string }>;
+
+    const folderRows = db
+      .prepare(`
+        SELECT folder_id, path
+        FROM folders
+        WHERE source_id = ?
+      `)
+      .all(sourceId) as Array<{ folder_id: string; path: string }>;
+
+    const childSources = db
+      .prepare(`
+        SELECT id, path
+        FROM sources
+        WHERE parent_source_id = ?
+      `)
+      .all(sourceId) as Array<{ id: number; path: string }>;
+
+    const fileReassignments: Array<{
+      fileId: string;
+      sourceId: number;
+      relativePath: string | null;
+      parentPath: string | null;
+    }> = [];
+    const fileIdsToDelete: string[] = [];
+
+    for (const row of fileRows) {
+      const newOwner = selectBestOwner(row.path);
+      if (!newOwner) {
+        fileIdsToDelete.push(row.file_id);
+        continue;
+      }
+
+      const relativePath = this.normalizeRelativePathForSource(row.path, newOwner.path);
+      fileReassignments.push({
+        fileId: row.file_id,
+        sourceId: newOwner.id,
+        relativePath,
+        parentPath: relativePath ? this.normalizeParentPathFromRelative(relativePath) : null,
+      });
+    }
+
+    const folderReassignments: Array<{
+      folderId: string;
+      sourceId: number;
+      relativePath: string | null;
+      parentPath: string | null;
+      depth: number;
+    }> = [];
+    const folderIdsToDelete: string[] = [];
+
+    for (const row of folderRows) {
+      const newOwner = selectBestOwner(row.path);
+      if (!newOwner) {
+        folderIdsToDelete.push(row.folder_id);
+        continue;
+      }
+
+      const relativePath = this.normalizeRelativePathForSource(row.path, newOwner.path);
+      if (!relativePath) {
+        folderIdsToDelete.push(row.folder_id);
+        continue;
+      }
+      const depth = relativePath ? relativePath.split('/').length - 1 : 0;
+      folderReassignments.push({
+        folderId: row.folder_id,
+        sourceId: newOwner.id,
+        relativePath,
+        parentPath: relativePath ? this.normalizeParentPathFromRelative(relativePath) : null,
+        depth: Math.max(0, depth),
+      });
+    }
+
+    const childReparenting: Array<{ sourceId: number; parentSourceId: number | null }> = [];
+    for (const child of childSources) {
+      const nextParent = selectBestOwner(child.path, child.id);
+      childReparenting.push({
+        sourceId: child.id,
+        parentSourceId: nextParent ? nextParent.id : null,
+      });
+    }
+
+    const tx = db.transaction(() => {
+      const updateFileStmt = db.prepare(`
+        UPDATE files
+        SET source_id = ?, relative_path = ?, parent_path = ?, updated_at = ?
+        WHERE file_id = ?
+      `);
+      const deleteFileStmt = db.prepare(`DELETE FROM files WHERE file_id = ?`);
+      const updateFolderStmt = db.prepare(`
+        UPDATE folders
+        SET source_id = ?, relative_path = ?, parent_path = ?, depth = ?, updated_at = ?
+        WHERE folder_id = ?
+      `);
+      const deleteFolderStmt = db.prepare(`DELETE FROM folders WHERE folder_id = ?`);
+      const updateChildParentStmt = db.prepare(`
+        UPDATE sources
+        SET parent_source_id = ?
+        WHERE id = ?
+      `);
+
+      const now = Date.now();
+
+      for (const update of fileReassignments) {
+        updateFileStmt.run(update.sourceId, update.relativePath, update.parentPath, now, update.fileId);
+      }
+      for (const fileId of fileIdsToDelete) {
+        deleteFileStmt.run(fileId);
+      }
+
+      for (const update of folderReassignments) {
+        updateFolderStmt.run(
+          update.sourceId,
+          update.relativePath,
+          update.parentPath,
+          update.depth,
+          now,
+          update.folderId
+        );
+      }
+      for (const folderId of folderIdsToDelete) {
+        deleteFolderStmt.run(folderId);
+      }
+
+      // Remove any leftovers still owned by this source (safety net).
+      db.prepare(`DELETE FROM files WHERE source_id = ?`).run(sourceId);
+      db.prepare(`DELETE FROM folders WHERE source_id = ?`).run(sourceId);
+
+      db.prepare(`DELETE FROM events WHERE source_id = ?`).run(sourceId);
+
+      for (const childUpdate of childReparenting) {
+        updateChildParentStmt.run(childUpdate.parentSourceId, childUpdate.sourceId);
+      }
+
+      db.prepare(`DELETE FROM sources WHERE id = ?`).run(sourceId);
+    });
+
+    tx();
   }
 
   // ============================================================================
@@ -622,116 +861,37 @@ export class DatabaseManager {
 
   async getFilesBySource(sourceId: number, query?: string, parentPath?: string | null, limit?: number, offset?: number): Promise<FileRecord[]> {
     const db = this.ensureReady();
-    
-    // Get source info to check for parent link
+
     const source = await this.getSourceById(sourceId);
     if (!source) {
       return [];
     }
-    
-    // Build list of source IDs to query (includes parent if linked)
-    const sourceIds: number[] = [sourceId];
-    if (source.parent_source_id) {
-      sourceIds.push(source.parent_source_id);
-      console.log(`[getFilesBySource] Including parent source ${source.parent_source_id} files`);
-    }
-    
-    // If querying parent source files, we need to filter by child source path
-    const childSourcePath = source.path;
-    let normalizedChildPath: string | null = null;
-    if (source.parent_source_id) {
-      try {
-        normalizedChildPath = fs.realpathSync.native(childSourcePath);
-      } catch {
-        normalizedChildPath = path.resolve(childSourcePath);
-      }
-    }
-    
+
+    const normalizedParentPath =
+      parentPath === undefined ? undefined : parentPath === null ? null : parentPath.replace(/\\/g, '/');
+    const scopePath =
+      normalizedParentPath && normalizedParentPath.length > 0
+        ? path.join(source.path, ...normalizedParentPath.split('/'))
+        : source.path;
+
     let sql = `
       SELECT id, file_id, path, name, extension, size, mtime, source_id, relative_path, parent_path, created_at, updated_at
       FROM files
-      WHERE source_id IN (${sourceIds.map(() => '?').join(',')})
-      AND (status IS NULL OR status = 'present')
+      WHERE (status IS NULL OR status = 'present')
+      AND ${this.getPathScopeSql('path')}
     `;
-    const params: (number | string | null)[] = [...sourceIds];
+    const params: Array<string | number> = [...this.getPathScopeParams(scopePath)];
 
-    // If this source has a parent, filter parent files to only include those within child path
-    if (source.parent_source_id && normalizedChildPath) {
-      // Files from child source OR files from parent source within child path
-      sql = `
-        SELECT id, file_id, path, name, extension, size, mtime, source_id, relative_path, parent_path, created_at, updated_at
-        FROM files
-        WHERE (
-          source_id = ? OR
-          (source_id = ? AND (
-            path = ? OR
-            path LIKE ? OR
-            path LIKE ?
-          ))
-        )
-        AND (status IS NULL OR status = 'present')
-      `;
-      params.length = 0; // Reset params
-      params.push(sourceId, source.parent_source_id, normalizedChildPath, `${normalizedChildPath}/%`, `${normalizedChildPath}\\%`);
-    }
-
-    // Filter by parent path if specified
-    if (parentPath !== undefined) {
-      if (parentPath === null) {
-        // Root level: files with no parent_path, OR parent source files with parent_path = child source name
-        if (source.parent_source_id && normalizedChildPath) {
-          const childSourceName = path.basename(childSourcePath);
-          sql += ` AND (
-            (source_id = ? AND (parent_path IS NULL OR parent_path = '')) OR
-            (source_id = ? AND parent_path = ?)
-          )`;
-          params.push(sourceId, source.parent_source_id, childSourceName);
-        } else {
-          sql += ` AND (parent_path IS NULL OR parent_path = '')`;
-        }
-      } else {
-        // Non-root level: need to handle parent source files too
-        if (source.parent_source_id && normalizedChildPath) {
-          const childSourceName = path.basename(childSourcePath);
-          // Transform the requested parentPath to parent source's perspective
-          const parentSourceParentPath = childSourceName + '/' + parentPath;
-          sql += ` AND (
-            (source_id = ? AND parent_path = ?) OR
-            (source_id = ? AND parent_path = ?)
-          )`;
-          params.push(sourceId, parentPath, source.parent_source_id, parentSourceParentPath);
-        } else {
-          sql += ` AND parent_path = ?`;
-          params.push(parentPath);
-        }
-      }
-    }
-
-    if (query && query.trim()) {
+    const normalizedQuery = query?.trim() || '';
+    if (normalizedQuery.length > 0) {
       sql += ` AND (name LIKE ? OR extension LIKE ?)`;
-      const likePattern = `%${query.trim()}%`;
+      const likePattern = `%${normalizedQuery}%`;
       params.push(likePattern, likePattern);
     }
 
     sql += ` ORDER BY mtime DESC`;
-    
-    // Apply pagination.
-    // SQLite expects LIMIT before OFFSET; if OFFSET is provided without LIMIT, use LIMIT -1.
-    const hasLimit = limit !== undefined && limit !== null && limit > 0;
-    const hasOffset = offset !== undefined && offset !== null && offset > 0;
 
-    if (hasLimit) {
-      sql += ` LIMIT ${limit}`;
-    } else if (hasOffset) {
-      sql += ` LIMIT -1`;
-    }
-
-    if (hasOffset) {
-      sql += ` OFFSET ${offset}`;
-    }
-
-    const stmt = db.prepare(sql);
-    const rows = stmt.all(...params) as Array<{
+    const rows = db.prepare(sql).all(...params) as Array<{
       id: number;
       file_id: string;
       path: string;
@@ -745,56 +905,45 @@ export class DatabaseManager {
       created_at: number;
       updated_at: number;
     }>;
-    
-    // If this source has a parent, we need to transform parent source file paths
-    // to be relative to the child source
-    const needsPathTransformation = source.parent_source_id && normalizedChildPath;
-    const childSourceName = path.basename(childSourcePath);
-    
-    return rows.map(row => {
-      let relativePath = row.relative_path;
-      let parentPath = row.parent_path;
-      const fileSourceId = row.source_id;
-      
-      // Transform paths if this file is from parent source
-      if (needsPathTransformation && fileSourceId === source.parent_source_id && relativePath) {
-        // Remove the child source name prefix from relative_path
-        // e.g., "Catholica/file.txt" -> "file.txt"
-        // e.g., "Catholica/subfolder/file.txt" -> "subfolder/file.txt"
-        if (relativePath.startsWith(childSourceName + '/')) {
-          relativePath = relativePath.substring(childSourceName.length + 1);
-        } else if (relativePath === childSourceName) {
-          relativePath = ''; // Root file
+
+    const filtered = rows
+      .map((row) => {
+        const normalizedRelative = this.normalizeRelativePathForSource(row.path, source.path);
+        if (!normalizedRelative) {
+          return null;
         }
-        
-        // Transform parent_path similarly
-        if (parentPath) {
-          if (parentPath.startsWith(childSourceName + '/')) {
-            parentPath = parentPath.substring(childSourceName.length + 1);
-          } else if (parentPath === childSourceName) {
-            parentPath = null; // Root level
-          }
-        } else if (relativePath && !relativePath.includes('/')) {
-          // If relative_path has no slashes and parent_path was null, it's now root level
-          parentPath = null;
+
+        const normalizedParent = this.normalizeParentPathFromRelative(normalizedRelative);
+
+        return {
+          id: row.id,
+          file_id: row.file_id,
+          path: row.path,
+          name: row.name,
+          extension: row.extension,
+          size: row.size,
+          mtime: row.mtime,
+          source_id: row.source_id,
+          relative_path: normalizedRelative,
+          parent_path: normalizedParent,
+          created_at: row.created_at,
+          updated_at: row.updated_at,
+        } as FileRecord;
+      })
+      .filter((row): row is FileRecord => Boolean(row))
+      .filter((row) => {
+        if (normalizedParentPath === undefined) {
+          return true;
         }
-      }
-      
-      return {
-        id: row.id,
-        file_id: row.file_id,
-        path: row.path,
-        name: row.name,
-        extension: row.extension,
-        size: row.size,
-        mtime: row.mtime,
-        source_id: fileSourceId, // Keep original source_id for reference
-        relative_path: relativePath,
-        parent_path: parentPath,
-        created_at: row.created_at,
-        updated_at: row.updated_at,
-      };
-    });
+        if (normalizedParentPath === null) {
+          return row.parent_path === null;
+        }
+        return row.parent_path === normalizedParentPath;
+      });
+
+    const start = offset && offset > 0 ? offset : 0;
+    const end = limit && limit > 0 ? start + limit : undefined;
+    return filtered.slice(start, end);
   }
 
   /**
@@ -820,6 +969,16 @@ export class DatabaseManager {
     const db = this.ensureReady();
     
     const hasTagsColumn = this.hasFileContentTagsColumn();
+    let sourcePathScopeParams: [string, string, string] | null = null;
+    let sourcePathForRelative: string | null = null;
+    if (sourceId !== undefined) {
+      const source = await this.getSourceById(sourceId);
+      if (!source) {
+        return [];
+      }
+      sourcePathForRelative = source.path;
+      sourcePathScopeParams = this.getPathScopeParams(source.path);
+    }
     
     const searchQuery = query.trim().toLowerCase();
     if (searchQuery.length === 0) {
@@ -828,13 +987,7 @@ export class DatabaseManager {
     
     const searchPattern = `%${searchQuery}%`;
     
-    // Build WHERE clause for source filtering
-    let sourceFilter = '';
     const params: (string | number)[] = [];
-    if (sourceId !== undefined) {
-      sourceFilter = 'AND f.source_id = ?';
-      params.push(sourceId);
-    }
     
     const tagsSelect = hasTagsColumn ? 'fc.tags' : 'NULL as tags';
     const tagsWhere = hasTagsColumn 
@@ -860,7 +1013,7 @@ export class DatabaseManager {
       LEFT JOIN file_content fc ON f.file_id = fc.file_id
       LEFT JOIN virtual_placements vp ON f.file_id = vp.file_id
       WHERE (f.status IS NULL OR f.status = 'present')
-        ${sourceFilter}
+        ${sourcePathScopeParams ? `AND ${this.getPathScopeSql('f.path')}` : ''}
         AND (
           LOWER(f.name) LIKE ?
           OR (fc.summary IS NOT NULL AND LOWER(fc.summary) LIKE ?)
@@ -873,7 +1026,9 @@ export class DatabaseManager {
     const searchParams = hasTagsColumn 
       ? [searchPattern, searchPattern, searchPattern]
       : [searchPattern, searchPattern];
-    const allParams = [...params, ...searchParams, limit * 3]; // Get more results to rank, then limit
+    const allParams = sourcePathScopeParams
+      ? [...params, ...sourcePathScopeParams, ...searchParams, limit * 10]
+      : [...params, ...searchParams, limit * 10]; // Get more results to rank, then limit
     
     const rows = db.prepare(sql).all(...allParams) as Array<{
       file_id: string;
@@ -947,12 +1102,19 @@ export class DatabaseManager {
         }
       }
       
+      const normalizedRelative = sourcePathForRelative
+        ? this.normalizeRelativePathForSource(row.path, sourcePathForRelative)
+        : row.relative_path;
+      const normalizedParent = normalizedRelative
+        ? this.normalizeParentPathFromRelative(normalizedRelative)
+        : row.parent_path;
+
       return {
         file_id: row.file_id,
         name: row.name,
         path: row.path,
-        relative_path: row.relative_path,
-        parent_path: row.parent_path,
+        relative_path: normalizedRelative,
+        parent_path: normalizedParent,
         extension: row.extension,
         size: row.size,
         mtime: row.mtime,
@@ -978,8 +1140,20 @@ export class DatabaseManager {
 
   async getFileCount(sourceId: number): Promise<number> {
     const db = this.ensureReady();
-    const stmt = db.prepare(`SELECT COUNT(*) as count FROM files WHERE source_id = ?`);
-    const row = stmt.get(sourceId) as { count: number } | undefined;
+    const source = await this.getSourceById(sourceId);
+    if (!source) {
+      return 0;
+    }
+
+    const row = db
+      .prepare(`
+        SELECT COUNT(*) as count
+        FROM files
+        WHERE (status IS NULL OR status = 'present')
+        AND ${this.getPathScopeSql('path')}
+      `)
+      .get(...this.getPathScopeParams(source.path)) as { count: number } | undefined;
+
     return row?.count || 0;
   }
 
@@ -1285,112 +1459,27 @@ export class DatabaseManager {
 
   async getFoldersBySource(sourceId: number, parentPath?: string | null, query?: string): Promise<FolderRecord[]> {
     const db = this.ensureReady();
-    
-    // Get source info to check for parent link
+
     const source = await this.getSourceById(sourceId);
     if (!source) {
       return [];
     }
-    
-    // Build list of source IDs to query (includes parent if linked)
-    const sourceIds: number[] = [sourceId];
-    if (source.parent_source_id) {
-      sourceIds.push(source.parent_source_id);
-      console.log(`[getFoldersBySource] Including parent source ${source.parent_source_id} folders`);
-    }
-    
-    // If querying parent source folders, we need to filter by child source path
-    const childSourcePath = source.path;
-    let normalizedChildPath: string | null = null;
-    if (source.parent_source_id) {
-      try {
-        normalizedChildPath = fs.realpathSync.native(childSourcePath);
-      } catch {
-        normalizedChildPath = path.resolve(childSourcePath);
-      }
-    }
-    
-    // Determine if we're at root level (showing contents of source folder itself)
-    const isRootLevel = parentPath === null || parentPath === undefined;
-    
-    let sql = `
-      SELECT id, folder_id, path, name, relative_path, parent_path, depth, source_id, item_count, mtime, created_at, updated_at
-      FROM folders
-      WHERE source_id IN (${sourceIds.map(() => '?').join(',')})
-    `;
-    const params: (number | string | null)[] = [...sourceIds];
 
-    // If this source has a parent, filter parent folders to only include those within child path
-    if (source.parent_source_id && normalizedChildPath) {
-      // Folders from child source OR folders from parent source within child path
-      // BUT exclude the folder that exactly matches the source path when at root level
-      sql = `
+    const normalizedParentPath =
+      parentPath === undefined ? undefined : parentPath === null ? null : parentPath.replace(/\\/g, '/');
+    const scopePath =
+      normalizedParentPath && normalizedParentPath.length > 0
+        ? path.join(source.path, ...normalizedParentPath.split('/'))
+        : source.path;
+    const scopeParams = this.getPathScopeParams(scopePath);
+
+    const folderRows = db
+      .prepare(`
         SELECT id, folder_id, path, name, relative_path, parent_path, depth, source_id, item_count, mtime, created_at, updated_at
         FROM folders
-        WHERE (
-          source_id = ? OR
-          (source_id = ? AND (
-            path LIKE ? OR
-            path LIKE ?
-          ))
-        )
-      `;
-      params.length = 0; // Reset params
-      params.push(sourceId, source.parent_source_id, `${normalizedChildPath}/%`, `${normalizedChildPath}\\%`);
-      
-      // At root level, exclude the source folder itself (we want to be inside it)
-      if (isRootLevel) {
-        sql += ` AND path != ?`;
-        params.push(normalizedChildPath);
-      }
-    } else {
-      // For non-linked sources, exclude the source folder itself at root level
-      if (isRootLevel) {
-        sql += ` AND path != ?`;
-        params.push(source.path);
-      }
-    }
-
-    // If searching, ignore parent path filter
-    if (query && query.trim()) {
-      sql += ` AND name LIKE ?`;
-      params.push(`%${query.trim()}%`);
-    } else if (parentPath !== undefined) {
-      // Filter by parent path if specified (only when not searching)
-      if (parentPath === null) {
-        // Root level: folders with no parent_path, OR parent source folders with parent_path = child source name
-        if (source.parent_source_id && normalizedChildPath) {
-          const childSourceName = path.basename(childSourcePath);
-          sql += ` AND (
-            (source_id = ? AND (parent_path IS NULL OR parent_path = '')) OR
-            (source_id = ? AND parent_path = ?)
-          )`;
-          params.push(sourceId, source.parent_source_id, childSourceName);
-        } else {
-          sql += ` AND (parent_path IS NULL OR parent_path = '')`;
-        }
-      } else {
-        // Non-root level: need to handle parent source folders too
-        if (source.parent_source_id && normalizedChildPath) {
-          const childSourceName = path.basename(childSourcePath);
-          // Transform the requested parentPath to parent source's perspective
-          const parentSourceParentPath = childSourceName + '/' + parentPath;
-          sql += ` AND (
-            (source_id = ? AND parent_path = ?) OR
-            (source_id = ? AND parent_path = ?)
-          )`;
-          params.push(sourceId, parentPath, source.parent_source_id, parentSourceParentPath);
-        } else {
-          sql += ` AND parent_path = ?`;
-          params.push(parentPath);
-        }
-      }
-    }
-
-    sql += ` ORDER BY name LIMIT 500`;
-
-    const stmt = db.prepare(sql);
-    const rows = stmt.all(...params) as Array<{
+        WHERE ${this.getPathScopeSql('path')}
+      `)
+      .all(...scopeParams) as Array<{
       id: number;
       folder_id: string;
       path: string;
@@ -1404,103 +1493,174 @@ export class DatabaseManager {
       created_at: number;
       updated_at: number;
     }>;
-    
-    // If this source has a parent, we need to transform parent source folder paths
-    // to be relative to the child source
-    const needsPathTransformation = source.parent_source_id && normalizedChildPath;
-    const childSourceName = path.basename(childSourcePath);
-    
-    return rows
-      .map(row => {
-        let relativePath = row.relative_path;
-        let parentPath = row.parent_path;
-        let depth = row.depth;
-        const folderSourceId = row.source_id;
-        
-        // Transform paths if this folder is from parent source
-        if (needsPathTransformation && folderSourceId === source.parent_source_id) {
-          // Remove the child source name prefix from relative_path
-          // e.g., "Catholica/subfolder" -> "subfolder"
-          if (relativePath.startsWith(childSourceName + '/')) {
-            relativePath = relativePath.substring(childSourceName.length + 1);
-            // Adjust depth: subtract 1 since we're removing one level
-            depth = Math.max(0, depth - 1);
-          } else if (relativePath === childSourceName) {
-            // This is the source folder itself - skip it (should be filtered by SQL, but just in case)
-            return null;
-          }
-          
-          // Transform parent_path similarly
-          if (parentPath) {
-            if (parentPath.startsWith(childSourceName + '/')) {
-              parentPath = parentPath.substring(childSourceName.length + 1);
-            } else if (parentPath === childSourceName) {
-              parentPath = null; // Root level
-            }
-          }
+
+    const fileRows = db
+      .prepare(`
+        SELECT path, mtime
+        FROM files
+        WHERE (status IS NULL OR status = 'present')
+        AND ${this.getPathScopeSql('path')}
+      `)
+      .all(...scopeParams) as Array<{ path: string; mtime: number }>;
+
+    type FolderAccumulator = FolderRecord & { synthetic: boolean };
+    const foldersByRelativePath = new Map<string, FolderAccumulator>();
+    const now = Date.now();
+
+    const ensureSyntheticFolder = (relativePath: string, mtime: number) => {
+      const normalizedRelativePath = relativePath.replace(/\\/g, '/');
+      if (!normalizedRelativePath || normalizedRelativePath === '.' || normalizedRelativePath.startsWith('..')) {
+        return;
+      }
+
+      const segments = normalizedRelativePath.split('/').filter((segment) => segment.length > 0);
+      for (let i = 0; i < segments.length; i++) {
+        const currentRelativePath = segments.slice(0, i + 1).join('/');
+        if (foldersByRelativePath.has(currentRelativePath)) {
+          continue;
         }
-        
+
+        const currentParentPath = i === 0 ? null : segments.slice(0, i).join('/');
+        const syntheticFolderId = crypto
+          .createHash('sha1')
+          .update(`synthetic-folder|${sourceId}|${currentRelativePath}`)
+          .digest('hex');
+        const syntheticNumericId = -parseInt(syntheticFolderId.slice(0, 8), 16);
+
+        foldersByRelativePath.set(currentRelativePath, {
+          id: syntheticNumericId,
+          folder_id: syntheticFolderId,
+          path: path.join(source.path, ...segments.slice(0, i + 1)),
+          name: segments[i],
+          relative_path: currentRelativePath,
+          parent_path: currentParentPath,
+          depth: i,
+          source_id: sourceId,
+          item_count: 0,
+          mtime,
+          created_at: now,
+          updated_at: now,
+          synthetic: true,
+        });
+      }
+    };
+
+    for (const row of folderRows) {
+      const normalizedRelativePath = this.normalizeRelativePathForSource(row.path, source.path);
+      if (!normalizedRelativePath) {
+        continue;
+      }
+
+      ensureSyntheticFolder(normalizedRelativePath, row.mtime);
+
+      const normalizedParentPath = this.normalizeParentPathFromRelative(normalizedRelativePath);
+      const normalizedDepth = normalizedRelativePath.split('/').length - 1;
+
+      foldersByRelativePath.set(normalizedRelativePath, {
+        id: row.id,
+        folder_id: row.folder_id,
+        path: row.path,
+        name: path.posix.basename(normalizedRelativePath),
+        relative_path: normalizedRelativePath,
+        parent_path: normalizedParentPath,
+        depth: normalizedDepth,
+        source_id: row.source_id,
+        item_count: row.item_count,
+        mtime: row.mtime,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        synthetic: false,
+      });
+    }
+
+    const directFileCountByParent = new Map<string | null, number>();
+    for (const row of fileRows) {
+      const relativeFilePath = this.normalizeRelativePathForSource(row.path, source.path);
+      if (!relativeFilePath) {
+        continue;
+      }
+      const parentRelativePath = this.normalizeParentPathFromRelative(relativeFilePath);
+      if (parentRelativePath) {
+        ensureSyntheticFolder(parentRelativePath, row.mtime);
+      }
+      directFileCountByParent.set(parentRelativePath, (directFileCountByParent.get(parentRelativePath) || 0) + 1);
+    }
+
+    const directFolderCountByParent = new Map<string | null, number>();
+    for (const folder of foldersByRelativePath.values()) {
+      directFolderCountByParent.set(
+        folder.parent_path,
+        (directFolderCountByParent.get(folder.parent_path) || 0) + 1
+      );
+    }
+
+    const normalizedQuery = query?.trim().toLowerCase() || '';
+
+    return Array.from(foldersByRelativePath.values())
+      .map((folder) => {
+        const computedItemCount =
+          (directFolderCountByParent.get(folder.relative_path) || 0) +
+          (directFileCountByParent.get(folder.relative_path) || 0);
         return {
-          id: row.id,
-          folder_id: row.folder_id,
-          path: row.path,
-          name: row.name,
-          relative_path: relativePath,
-          parent_path: parentPath,
-          depth: depth,
-          source_id: folderSourceId, // Keep original source_id for reference
-          item_count: row.item_count,
-          mtime: row.mtime,
-          created_at: row.created_at,
-          updated_at: row.updated_at,
+          ...folder,
+          item_count: folder.synthetic || folder.item_count <= 0 ? computedItemCount : folder.item_count,
         };
       })
-      .filter((f): f is FolderRecord => f !== null);
+      .filter((folder) => {
+        if (normalizedQuery) {
+          return folder.name.toLowerCase().includes(normalizedQuery);
+        }
+        if (normalizedParentPath === undefined) {
+          return true;
+        }
+        if (normalizedParentPath === null) {
+          return folder.parent_path === null;
+        }
+        return folder.parent_path === normalizedParentPath;
+      })
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .slice(0, 500)
+      .map((folder) => ({
+        id: folder.id,
+        folder_id: folder.folder_id,
+        path: folder.path,
+        name: folder.name,
+        relative_path: folder.relative_path,
+        parent_path: folder.parent_path,
+        depth: folder.depth,
+        source_id: folder.source_id,
+        item_count: folder.item_count,
+        mtime: folder.mtime,
+        created_at: folder.created_at,
+        updated_at: folder.updated_at,
+      }));
   }
 
   async getAllFolders(sourceId: number): Promise<FolderRecord[]> {
-    const db = this.ensureReady();
-    const stmt = db.prepare(`
-      SELECT id, folder_id, path, name, relative_path, parent_path, depth, source_id, item_count, mtime, created_at, updated_at
-      FROM folders
-      WHERE source_id = ?
-      ORDER BY depth, name
-    `);
-    const rows = stmt.all(sourceId) as Array<{
-      id: number;
-      folder_id: string;
-      path: string;
-      name: string;
-      relative_path: string;
-      parent_path: string | null;
-      depth: number;
-      source_id: number;
-      item_count: number;
-      mtime: number;
-      created_at: number;
-      updated_at: number;
-    }>;
-    
-    return rows.map(row => ({
-      id: row.id,
-      folder_id: row.folder_id,
-      path: row.path,
-      name: row.name,
-      relative_path: row.relative_path,
-      parent_path: row.parent_path,
-      depth: row.depth,
-      source_id: row.source_id,
-      item_count: row.item_count,
-      mtime: row.mtime,
-      created_at: row.created_at,
-      updated_at: row.updated_at,
-    }));
+    const folders = await this.getFoldersBySource(sourceId, undefined, undefined);
+    return folders.sort((a, b) => {
+      if (a.depth !== b.depth) {
+        return a.depth - b.depth;
+      }
+      return a.name.localeCompare(b.name);
+    });
   }
 
   async getFolderCount(sourceId: number): Promise<number> {
     const db = this.ensureReady();
-    const stmt = db.prepare(`SELECT COUNT(*) as count FROM folders WHERE source_id = ?`);
-    const row = stmt.get(sourceId) as { count: number } | undefined;
+    const source = await this.getSourceById(sourceId);
+    if (!source) {
+      return 0;
+    }
+
+    const row = db
+      .prepare(`
+        SELECT COUNT(*) as count
+        FROM folders
+        WHERE ${this.getPathScopeSql('path')}
+      `)
+      .get(...this.getPathScopeParams(source.path)) as { count: number } | undefined;
+
     return row?.count || 0;
   }
 
@@ -1759,39 +1919,34 @@ export class DatabaseManager {
 
   async getVirtualPlacements(sourceId?: number): Promise<VirtualPlacement[]> {
     const db = this.ensureReady();
-    
     let sql = `
-      SELECT vp.id, vp.file_id, vp.virtual_path, vp.tags, vp.confidence, vp.reason, vp.planner_version, vp.created_at
+      SELECT
+        vp.id,
+        vp.file_id,
+        vp.virtual_path,
+        vp.tags,
+        vp.confidence,
+        vp.reason,
+        vp.planner_version,
+        vp.created_at
       FROM virtual_placements vp
+      INNER JOIN files f ON vp.file_id = f.file_id
+      WHERE (f.status IS NULL OR f.status = 'present')
     `;
-    
-    const params: number[] = [];
-    
+    const params: Array<string | number> = [];
+
     if (sourceId !== undefined) {
-      // Get source info to check for parent link
       const source = await this.getSourceById(sourceId);
       if (!source) {
         return [];
       }
-      
-      // Build list of source IDs to query (includes parent if linked)
-      const sourceIds: number[] = [sourceId];
-      if (source.parent_source_id) {
-        sourceIds.push(source.parent_source_id);
-      }
-      
-      sql += `
-        INNER JOIN files f ON vp.file_id = f.file_id
-        WHERE f.source_id IN (${sourceIds.map(() => '?').join(',')})
-        AND (f.status IS NULL OR f.status = 'present')
-      `;
-      params.push(...sourceIds);
+      sql += ` AND ${this.getPathScopeSql('f.path')}`;
+      params.push(...this.getPathScopeParams(source.path));
     }
-    
+
     sql += ` ORDER BY vp.virtual_path`;
-    
-    const stmt = db.prepare(sql);
-    const rows = stmt.all(...params) as Array<{
+
+    const rows = db.prepare(sql).all(...params) as Array<{
       id: number;
       file_id: string;
       virtual_path: string;
@@ -1801,8 +1956,8 @@ export class DatabaseManager {
       planner_version: string;
       created_at: number;
     }>;
-    
-    return rows.map(row => ({
+
+    return rows.map((row) => ({
       id: row.id,
       file_id: row.file_id,
       virtual_path: row.virtual_path,
@@ -1820,49 +1975,40 @@ export class DatabaseManager {
    */
   async getVirtualPlacementsByPath(virtualPath: string, sourceId?: number): Promise<VirtualPlacement[]> {
     const db = this.ensureReady();
-    
-    // Normalize path: ensure it starts with / and ends with / for prefix matching
-    const normalizedPath = virtualPath === '/' ? '/' : virtualPath.endsWith('/') ? virtualPath : virtualPath + '/';
-    
     let sql = `
-      SELECT vp.id, vp.file_id, vp.virtual_path, vp.tags, vp.confidence, vp.reason, vp.planner_version, vp.created_at
+      SELECT
+        vp.id,
+        vp.file_id,
+        vp.virtual_path,
+        vp.tags,
+        vp.confidence,
+        vp.reason,
+        vp.planner_version,
+        vp.created_at
       FROM virtual_placements vp
+      INNER JOIN files f ON vp.file_id = f.file_id
+      WHERE (f.status IS NULL OR f.status = 'present')
     `;
-    
-    const params: (number | string)[] = [];
-    
+    const params: Array<string | number> = [];
+
     if (sourceId !== undefined) {
       const source = await this.getSourceById(sourceId);
       if (!source) {
         return [];
       }
-      
-      const sourceIds: number[] = [sourceId];
-      if (source.parent_source_id) {
-        sourceIds.push(source.parent_source_id);
-      }
-      
-      sql += `
-        INNER JOIN files f ON vp.file_id = f.file_id
-        WHERE f.source_id IN (${sourceIds.map(() => '?').join(',')})
-        AND (f.status IS NULL OR f.status = 'present')
-        AND (
-          vp.virtual_path = ? OR
-          vp.virtual_path LIKE ?
-        )
-      `;
-      params.push(...sourceIds, virtualPath, normalizedPath + '%');
-    } else {
-      sql += `
-        WHERE vp.virtual_path = ? OR vp.virtual_path LIKE ?
-      `;
-      params.push(virtualPath, normalizedPath + '%');
+      sql += ` AND ${this.getPathScopeSql('f.path')}`;
+      params.push(...this.getPathScopeParams(source.path));
     }
-    
+
+    if (virtualPath !== '/') {
+      const normalizedPath = virtualPath.endsWith('/') ? virtualPath : `${virtualPath}/`;
+      sql += ` AND (vp.virtual_path = ? OR vp.virtual_path LIKE ?)`;
+      params.push(virtualPath, `${normalizedPath}%`);
+    }
+
     sql += ` ORDER BY vp.virtual_path`;
-    
-    const stmt = db.prepare(sql);
-    const rows = stmt.all(...params) as Array<{
+
+    const rows = db.prepare(sql).all(...params) as Array<{
       id: number;
       file_id: string;
       virtual_path: string;
@@ -1872,8 +2018,8 @@ export class DatabaseManager {
       planner_version: string;
       created_at: number;
     }>;
-    
-    return rows.map(row => ({
+
+    return rows.map((row) => ({
       id: row.id,
       file_id: row.file_id,
       virtual_path: row.virtual_path,
@@ -1891,44 +2037,40 @@ export class DatabaseManager {
    */
   async getDirectVirtualFilePlacements(virtualPath: string, sourceId?: number): Promise<VirtualPlacement[]> {
     const db = this.ensureReady();
-
-    const normalizedPath = virtualPath === '/' ? '/' : (virtualPath.endsWith('/') ? virtualPath : virtualPath + '/');
-    const relativeStartIndex = normalizedPath.length + 1; // SQLite substr is 1-based
+    const normalizedPath = virtualPath === '/' ? '/' : virtualPath.endsWith('/') ? virtualPath : `${virtualPath}/`;
+    const remainderStartIndex = normalizedPath.length + 1; // SQLite SUBSTR is 1-indexed.
 
     let sql = `
-      SELECT vp.id, vp.file_id, vp.virtual_path, vp.tags, vp.confidence, vp.reason, vp.planner_version, vp.created_at
+      SELECT
+        vp.id,
+        vp.file_id,
+        vp.virtual_path,
+        vp.tags,
+        vp.confidence,
+        vp.reason,
+        vp.planner_version,
+        vp.created_at
       FROM virtual_placements vp
+      INNER JOIN files f ON vp.file_id = f.file_id
+      WHERE (f.status IS NULL OR f.status = 'present')
     `;
-
-    const params: Array<number | string> = [];
+    const params: Array<string | number> = [];
 
     if (sourceId !== undefined) {
       const source = await this.getSourceById(sourceId);
       if (!source) {
         return [];
       }
-
-      const sourceIds: number[] = [sourceId];
-      if (source.parent_source_id) {
-        sourceIds.push(source.parent_source_id);
-      }
-
-      sql += `
-        INNER JOIN files f ON vp.file_id = f.file_id
-        WHERE f.source_id IN (${sourceIds.map(() => '?').join(',')})
-        AND (f.status IS NULL OR f.status = 'present')
-      `;
-      params.push(...sourceIds);
-    } else {
-      sql += ` WHERE 1 = 1`;
+      params.push(...this.getPathScopeParams(source.path));
+      sql += ` AND ${this.getPathScopeSql('f.path')}`;
     }
 
     sql += `
       AND vp.virtual_path LIKE ?
-      AND substr(vp.virtual_path, ?) NOT LIKE '%/%'
+      AND INSTR(SUBSTR(vp.virtual_path, ?), '/') = 0
       ORDER BY vp.virtual_path
     `;
-    params.push(`${normalizedPath}%`, relativeStartIndex);
+    params.push(`${normalizedPath}%`, remainderStartIndex);
 
     const rows = db.prepare(sql).all(...params) as Array<{
       id: number;
@@ -1959,48 +2101,42 @@ export class DatabaseManager {
    */
   async getDirectVirtualFolderPaths(virtualPath: string, sourceId?: number): Promise<string[]> {
     const db = this.ensureReady();
-
-    const normalizedPath = virtualPath === '/' ? '/' : (virtualPath.endsWith('/') ? virtualPath : virtualPath + '/');
-    const relativeStartIndex = normalizedPath.length + 1; // SQLite substr is 1-based
+    const normalizedPath = virtualPath === '/' ? '/' : virtualPath.endsWith('/') ? virtualPath : `${virtualPath}/`;
 
     let sql = `
-      SELECT DISTINCT
-        (? || substr(substr(vp.virtual_path, ?), 1, instr(substr(vp.virtual_path, ?), '/') - 1)) as folder_path
+      SELECT vp.virtual_path
       FROM virtual_placements vp
+      INNER JOIN files f ON vp.file_id = f.file_id
+      WHERE (f.status IS NULL OR f.status = 'present')
+        AND vp.virtual_path LIKE ?
     `;
-
-    const params: Array<number | string> = [normalizedPath, relativeStartIndex, relativeStartIndex];
+    const params: Array<string | number> = [`${normalizedPath}%`];
 
     if (sourceId !== undefined) {
       const source = await this.getSourceById(sourceId);
       if (!source) {
         return [];
       }
-
-      const sourceIds: number[] = [sourceId];
-      if (source.parent_source_id) {
-        sourceIds.push(source.parent_source_id);
-      }
-
-      sql += `
-        INNER JOIN files f ON vp.file_id = f.file_id
-        WHERE f.source_id IN (${sourceIds.map(() => '?').join(',')})
-        AND (f.status IS NULL OR f.status = 'present')
-      `;
-      params.push(...sourceIds);
-    } else {
-      sql += ` WHERE 1 = 1`;
+      sql += ` AND ${this.getPathScopeSql('f.path')}`;
+      params.push(...this.getPathScopeParams(source.path));
     }
 
-    sql += `
-      AND vp.virtual_path LIKE ?
-      AND substr(vp.virtual_path, ?) LIKE '%/%'
-      ORDER BY folder_path
-    `;
-    params.push(`${normalizedPath}%`, relativeStartIndex);
+    const placements = db.prepare(sql).all(...params) as Array<{ virtual_path: string }>;
+    const folderPaths = new Set<string>();
 
-    const rows = db.prepare(sql).all(...params) as Array<{ folder_path: string }>;
-    return rows.map((row) => row.folder_path);
+    for (const placement of placements) {
+      const remainder = placement.virtual_path.slice(normalizedPath.length);
+      if (!remainder.includes('/')) {
+        continue;
+      }
+      const firstSegment = remainder.split('/')[0];
+      if (!firstSegment) {
+        continue;
+      }
+      folderPaths.add(normalizedPath === '/' ? `/${firstSegment}` : `${normalizedPath}${firstSegment}`);
+    }
+
+    return Array.from(folderPaths).sort((a, b) => a.localeCompare(b));
   }
 
   /**
@@ -2015,19 +2151,12 @@ export class DatabaseManager {
       return [];
     }
 
-    let sourceIds: number[] = [];
-    if (sourceId !== undefined) {
-      const source = await this.getSourceById(sourceId);
-      if (!source) {
-        return [];
-      }
-      sourceIds = [sourceId];
-      if (source.parent_source_id) {
-        sourceIds.push(source.parent_source_id);
-      }
+    const source = sourceId !== undefined ? await this.getSourceById(sourceId) : undefined;
+    if (sourceId !== undefined && !source) {
+      return [];
     }
 
-    const maxFileIdsPerChunk = Math.max(1, SQLITE_MAX_VARIABLES - sourceIds.length);
+    const maxFileIdsPerChunk = SQLITE_MAX_VARIABLES;
     const rows: Array<{
       id: number;
       file_id: string;
@@ -2055,29 +2184,48 @@ export class DatabaseManager {
       `;
       const params: Array<string | number> = [...chunk];
 
-      if (sourceIds.length > 0) {
-        sql += ` AND source_id IN (${sourceIds.map(() => '?').join(',')})`;
-        params.push(...sourceIds);
-      }
-
       const chunkRows = db.prepare(sql).all(...params) as typeof rows;
       rows.push(...chunkRows);
     }
 
-    return rows.map((row) => ({
-      id: row.id,
-      file_id: row.file_id,
-      path: row.path,
-      name: row.name,
-      extension: row.extension,
-      size: row.size,
-      mtime: row.mtime,
-      source_id: row.source_id,
-      relative_path: row.relative_path,
-      parent_path: row.parent_path,
-      created_at: row.created_at,
-      updated_at: row.updated_at,
-    }));
+    return rows
+      .filter((row) => !source || this.isPathWithinOrEqual(row.path, source.path))
+      .map((row) => {
+        if (!source) {
+          return {
+            id: row.id,
+            file_id: row.file_id,
+            path: row.path,
+            name: row.name,
+            extension: row.extension,
+            size: row.size,
+            mtime: row.mtime,
+            source_id: row.source_id,
+            relative_path: row.relative_path,
+            parent_path: row.parent_path,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+          };
+        }
+
+        const relativePath = this.normalizeRelativePathForSource(row.path, source.path);
+        const parentPath = relativePath ? this.normalizeParentPathFromRelative(relativePath) : null;
+
+        return {
+          id: row.id,
+          file_id: row.file_id,
+          path: row.path,
+          name: row.name,
+          extension: row.extension,
+          size: row.size,
+          mtime: row.mtime,
+          source_id: row.source_id,
+          relative_path: relativePath,
+          parent_path: parentPath,
+          created_at: row.created_at,
+          updated_at: row.updated_at,
+        };
+      });
   }
 
   /**
@@ -2085,62 +2233,9 @@ export class DatabaseManager {
    * Useful for virtual tree construction without exposing raw DB access.
    */
   async getFileRecordsForVirtualPlacements(sourceId?: number): Promise<FileRecord[]> {
-    const db = this.ensureReady();
-
-    let sql = `
-      SELECT
-        f.id, f.file_id, f.path, f.name, f.extension, f.size, f.mtime,
-        f.source_id, f.relative_path, f.parent_path, f.created_at, f.updated_at
-      FROM virtual_placements vp
-      INNER JOIN files f ON vp.file_id = f.file_id
-      WHERE (f.status IS NULL OR f.status = 'present')
-    `;
-    const params: number[] = [];
-
-    if (sourceId !== undefined) {
-      const source = await this.getSourceById(sourceId);
-      if (!source) {
-        return [];
-      }
-
-      const sourceIds: number[] = [sourceId];
-      if (source.parent_source_id) {
-        sourceIds.push(source.parent_source_id);
-      }
-
-      sql += ` AND f.source_id IN (${sourceIds.map(() => '?').join(',')})`;
-      params.push(...sourceIds);
-    }
-
-    const rows = db.prepare(sql).all(...params) as Array<{
-      id: number;
-      file_id: string;
-      path: string;
-      name: string;
-      extension: string;
-      size: number;
-      mtime: number;
-      source_id: number;
-      relative_path: string | null;
-      parent_path: string | null;
-      created_at: number;
-      updated_at: number;
-    }>;
-
-    return rows.map((row) => ({
-      id: row.id,
-      file_id: row.file_id,
-      path: row.path,
-      name: row.name,
-      extension: row.extension,
-      size: row.size,
-      mtime: row.mtime,
-      source_id: row.source_id,
-      relative_path: row.relative_path,
-      parent_path: row.parent_path,
-      created_at: row.created_at,
-      updated_at: row.updated_at,
-    }));
+    const placements = await this.getVirtualPlacements(sourceId);
+    const fileIds = Array.from(new Set(placements.map((placement) => placement.file_id)));
+    return this.getFileRecordsByIds(fileIds, sourceId);
   }
 
   /**
@@ -2152,54 +2247,35 @@ export class DatabaseManager {
    */
   async getTopLevelVirtualPlacements(sourceId?: number): Promise<VirtualPlacement[]> {
     const db = this.ensureReady();
-    
     let sql = `
-      SELECT 
-        vp.id, 
-        vp.file_id, 
-        vp.virtual_path, 
-        vp.tags, 
-        vp.confidence, 
-        vp.reason, 
-        vp.planner_version, 
+      SELECT
+        vp.id,
+        vp.file_id,
+        vp.virtual_path,
+        vp.tags,
+        vp.confidence,
+        vp.reason,
+        vp.planner_version,
         vp.created_at
       FROM virtual_placements vp
+      INNER JOIN files f ON vp.file_id = f.file_id
+      WHERE (f.status IS NULL OR f.status = 'present')
+        AND (LENGTH(vp.virtual_path) - LENGTH(REPLACE(vp.virtual_path, '/', ''))) = 2
     `;
-    
-    const params: number[] = [];
-    
+    const params: Array<string | number> = [];
+
     if (sourceId !== undefined) {
-      // Get source info to check for parent link
       const source = await this.getSourceById(sourceId);
       if (!source) {
         return [];
       }
-      
-      // Build list of source IDs to query (includes parent if linked)
-      const sourceIds: number[] = [sourceId];
-      if (source.parent_source_id) {
-        sourceIds.push(source.parent_source_id);
-      }
-      
-      sql += `
-        INNER JOIN files f ON vp.file_id = f.file_id
-        WHERE f.source_id IN (${sourceIds.map(() => '?').join(',')})
-        AND (f.status IS NULL OR f.status = 'present')
-        AND vp.virtual_path LIKE '/%/%'
-        AND vp.virtual_path NOT LIKE '/%/%/%'
-      `;
-      params.push(...sourceIds);
-    } else {
-      sql += `
-        WHERE vp.virtual_path LIKE '/%/%'
-        AND vp.virtual_path NOT LIKE '/%/%/%'
-      `;
+      sql += ` AND ${this.getPathScopeSql('f.path')}`;
+      params.push(...this.getPathScopeParams(source.path));
     }
-    
+
     sql += ` ORDER BY vp.virtual_path`;
-    
-    const stmt = db.prepare(sql);
-    const rows = stmt.all(...params) as Array<{
+
+    const rows = db.prepare(sql).all(...params) as Array<{
       id: number;
       file_id: string;
       virtual_path: string;
@@ -2209,8 +2285,8 @@ export class DatabaseManager {
       planner_version: string;
       created_at: number;
     }>;
-    
-    return rows.map(row => ({
+
+    return rows.map((row) => ({
       id: row.id,
       file_id: row.file_id,
       virtual_path: row.virtual_path,
@@ -2231,38 +2307,24 @@ export class DatabaseManager {
    */
   async getVirtualPlacementCount(sourceId?: number): Promise<number> {
     const db = this.ensureReady();
-    
     let sql = `
       SELECT COUNT(*) as count
       FROM virtual_placements vp
+      INNER JOIN files f ON vp.file_id = f.file_id
+      WHERE (f.status IS NULL OR f.status = 'present')
     `;
-    
-    const params: number[] = [];
-    
+    const params: Array<string | number> = [];
+
     if (sourceId !== undefined) {
-      // Get source info to check for parent link
       const source = await this.getSourceById(sourceId);
       if (!source) {
         return 0;
       }
-      
-      // Build list of source IDs to query (includes parent if linked)
-      const sourceIds: number[] = [sourceId];
-      if (source.parent_source_id) {
-        sourceIds.push(source.parent_source_id);
-      }
-      
-      sql += `
-        INNER JOIN files f ON vp.file_id = f.file_id
-        WHERE f.source_id IN (${sourceIds.map(() => '?').join(',')})
-        AND (f.status IS NULL OR f.status = 'present')
-      `;
-      params.push(...sourceIds);
+      sql += ` AND ${this.getPathScopeSql('f.path')}`;
+      params.push(...this.getPathScopeParams(source.path));
     }
-    
-    const stmt = db.prepare(sql);
-    const row = stmt.get(...params) as { count: number } | undefined;
-    
+
+    const row = db.prepare(sql).get(...params) as { count: number } | undefined;
     return row?.count || 0;
   }
 
@@ -2378,9 +2440,18 @@ export class DatabaseManager {
 
   async getFilesNeedingContent(sourceId?: number): Promise<string[]> {
     const db = this.ensureReady();
-    
-    let sql = `
-      SELECT f.file_id
+
+    let sourcePath: string | null = null;
+    if (sourceId !== undefined) {
+      const source = await this.getSourceById(sourceId);
+      if (!source) {
+        return [];
+      }
+      sourcePath = source.path;
+    }
+
+    const sql = `
+      SELECT f.file_id, f.path
       FROM files f
       LEFT JOIN file_content fc ON f.file_id = fc.file_id
       WHERE (f.status IS NULL OR f.status = 'present')
@@ -2391,15 +2462,11 @@ export class DatabaseManager {
         f.mtime > fc.extracted_at
       )
     `;
-    
-    const params: number[] = [];
-    if (sourceId !== undefined) {
-      sql += ` AND f.source_id = ?`;
-      params.push(sourceId);
-    }
-    
-    const rows = db.prepare(sql).all(...params) as Array<{ file_id: string }>;
-    return rows.map(row => row.file_id);
+
+    const rows = db.prepare(sql).all() as Array<{ file_id: string; path: string }>;
+    return rows
+      .filter((row) => !sourcePath || this.isPathWithinOrEqual(row.path, sourcePath))
+      .map((row) => row.file_id);
   }
 
   async getFilesWithoutContent(sourceId?: number): Promise<string[]> {
@@ -2418,6 +2485,10 @@ export class DatabaseManager {
    */
   async getFileCardsBySource(sourceId: number, limit?: number): Promise<FileCard[]> {
     const db = this.ensureReady();
+    const source = await this.getSourceById(sourceId);
+    if (!source) {
+      return [];
+    }
 
     const hasTagsColumn = this.hasFileContentTagsColumn();
 
@@ -2452,16 +2523,11 @@ export class DatabaseManager {
         ${selectFields}
       FROM files f
       LEFT JOIN file_content fc ON f.file_id = fc.file_id
-      WHERE f.source_id = ?
-        AND (f.status IS NULL OR f.status = 'present')
+      WHERE (f.status IS NULL OR f.status = 'present')
       ORDER BY f.mtime DESC
     `;
 
-    if (typeof limit === 'number' && limit > 0) {
-      sql += ` LIMIT ${limit}`;
-    }
-
-    const rows = db.prepare(sql).all(sourceId) as Array<{
+    const rows = db.prepare(sql).all() as Array<{
       file_id: string;
       source_id: number;
       path: string;
@@ -2474,7 +2540,10 @@ export class DatabaseManager {
       tags: string | null;
     }>;
 
-    return rows.map((row): FileCard => {
+    const visibleRows = rows.filter((row) => this.isPathWithinOrEqual(row.path, source.path));
+    const slicedRows = typeof limit === 'number' && limit > 0 ? visibleRows.slice(0, limit) : visibleRows;
+
+    return slicedRows.map((row): FileCard => {
       let parsedTags: string[] = [];
       if (row.tags) {
         try {
@@ -2495,7 +2564,7 @@ export class DatabaseManager {
         file_id: row.file_id,
         source_id: row.source_id,
         path: row.path,
-        relative_path: row.relative_path,
+        relative_path: this.normalizeRelativePathForSource(row.path, source.path),
         name: row.name,
         extension: row.extension,
         size: row.size,

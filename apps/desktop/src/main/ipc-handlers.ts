@@ -1,6 +1,7 @@
 import type { IpcMain, BrowserWindow } from 'electron';
 import { dialog, shell } from 'electron';
 import * as path from 'path';
+import * as fs from 'fs';
 import {
   DatabaseManager,
   Crawler,
@@ -63,6 +64,23 @@ export function registerIpcHandlers(
   watcherManager: WatcherManager,
   apiKeyStore: ApiKeyStore
 ): void {
+  const normalizePathForComparison = (inputPath: string): string => {
+    try {
+      return fs.realpathSync.native(inputPath);
+    } catch {
+      return path.resolve(inputPath);
+    }
+  };
+
+  const isSubPath = (candidatePath: string, parentPath: string): boolean => {
+    const normalizedCandidate = normalizePathForComparison(candidatePath);
+    const normalizedParent = normalizePathForComparison(parentPath);
+    if (normalizedCandidate === normalizedParent) {
+      return false;
+    }
+    return normalizedCandidate.startsWith(normalizedParent + path.sep);
+  };
+
   // Set up IPC event emission for file changes
   watcherManager.setOnFileChangedCallback((event) => {
     const mainWindow = getMainWindow();
@@ -147,6 +165,40 @@ export function registerIpcHandlers(
         }
 
         const source = await db.addSource(name, sourcePath);
+
+        // Reconcile nested sources:
+        // If this new source is a parent of already configured sources, link those sources to this parent.
+        try {
+          const allSources = await db.getSources();
+          const sourceById = new Map(allSources.map((s) => [s.id, s]));
+          const childCandidates = allSources.filter(
+            (candidate) => candidate.id !== source.id && isSubPath(candidate.path, source.path)
+          );
+
+          for (const childSource of childCandidates) {
+            if (childSource.parent_source_id === source.id) {
+              continue;
+            }
+
+            if (childSource.parent_source_id) {
+              const currentParent = sourceById.get(childSource.parent_source_id);
+              if (currentParent) {
+                const currentParentIsMoreSpecific =
+                  isSubPath(childSource.path, currentParent.path) && currentParent.path.length >= source.path.length;
+                if (currentParentIsMoreSpecific) {
+                  continue;
+                }
+              }
+            }
+
+            await db.linkSourceToParent(childSource.id, source.id);
+            console.log(
+              `[IPC] Linked child source "${childSource.name}" (${childSource.id}) to new parent "${source.name}" (${source.id})`
+            );
+          }
+        } catch (linkErr) {
+          console.warn('[IPC] Failed to reconcile nested source links after adding source:', linkErr);
+        }
         
         // Start watching the new source
         watcherManager.startWatching(source.id, source.path);
@@ -342,7 +394,9 @@ export function registerIpcHandlers(
                   `• ${preview.virtualPlacementCount.toLocaleString()} virtual placements\n` +
                   (preview.fileContentCount && preview.fileContentCount > 0 ? `• ${preview.fileContentCount.toLocaleString()} file content records\n` : '') +
                   (preview.eventCount && preview.eventCount > 0 ? `• ${preview.eventCount.toLocaleString()} watch events\n` : '') +
-                  (preview.childSourceCount && preview.childSourceCount > 0 ? `• ${preview.childSourceCount.toLocaleString()} child sources\n` : '') +
+                  (preview.childSourceCount && preview.childSourceCount > 0
+                    ? `• ${preview.childSourceCount.toLocaleString()} child sources (will be unlinked, not deleted)\n`
+                    : '') +
                   `\n⚠️ This only deletes data from Fily.\n` +
                   `Your actual files at "${preview.sourcePath}" will NOT be deleted.`,
           buttons: ['Cancel', 'Delete'],
