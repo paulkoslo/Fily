@@ -402,6 +402,7 @@ export class Crawler {
 
     let filesProcessed = 0;
     let foldersProcessed = 0;
+    const pendingWrites: Promise<void>[] = [];
     let filesFound = 0;
     let foldersFound = 0;
     let lastProgressReport = 0;
@@ -429,7 +430,7 @@ export class Crawler {
 
         // Process batch when full
         if (fileBatch.length >= BATCH_SIZE) {
-          this.processFileBatch(fileBatch, result);
+          pendingWrites.push(this.processFileBatch(fileBatch, result));
           filesProcessed += fileBatch.length;
           fileBatch = [];
 
@@ -468,7 +469,7 @@ export class Crawler {
 
         // Process batch when full
         if (folderBatch.length >= BATCH_SIZE) {
-          this.processFolderBatch(folderBatch, result);
+          pendingWrites.push(this.processFolderBatch(folderBatch, result));
           foldersProcessed += folderBatch.length;
           folderBatch = [];
         }
@@ -488,6 +489,7 @@ export class Crawler {
       await this.processFolderBatch(folderBatch, result);
       foldersProcessed += folderBatch.length;
     }
+    await Promise.all(pendingWrites);
 
     result.filesScanned = walkResult.filesFound;
     result.foldersScanned = walkResult.foldersFound;
@@ -499,6 +501,19 @@ export class Crawler {
       filesProcessed,
       message: `Indexed ${walkResult.filesFound} files and ${walkResult.foldersFound} folders`,
     });
+
+    // An unreadable subtree or failed write does not prove its old records are
+    // gone. Keep the existing index/analysis until a complete scan can reconcile.
+    if (result.errors.length > 0) {
+      reportProgress({
+        status: 'done',
+        filesFound: walkResult.filesFound,
+        foldersFound: walkResult.foldersFound,
+        filesProcessed,
+        message: `Scan incomplete (${result.errors.length} errors); retained previously indexed items.`,
+      });
+      return result;
+    }
 
     // Phase 2: Clean up removed files and folders
     reportProgress({

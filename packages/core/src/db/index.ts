@@ -4,6 +4,7 @@ import * as crypto from 'crypto';
 import Database from 'better-sqlite3';
 import { runMigrations } from './migrations';
 import type { FileRecord, FolderRecord, Source, VirtualPlacement, PlannerOutput, FileCard } from '../ipc/contracts';
+import type { VirtualFolderSummary } from '../virtual-tree';
 
 // SQLite has a limit of ~999 variables per query
 const SQLITE_MAX_VARIABLES = 900;
@@ -842,7 +843,15 @@ export class DatabaseManager {
   ): Promise<void> {
     const db = this.ensureReady();
     const now = Date.now();
-    db.prepare(`
+    const findOwner = db.prepare(`
+      SELECT f.source_id, s.path AS source_path
+      FROM files f JOIN sources s ON s.id = f.source_id
+      WHERE f.path = ?
+      ORDER BY (f.file_id = ?) DESC, f.updated_at DESC, f.id DESC
+      LIMIT 1
+    `);
+    const removeOldRevisions = db.prepare(`DELETE FROM files WHERE path = ? AND file_id <> ?`);
+    const upsert = db.prepare(`
       INSERT INTO files (file_id, path, name, extension, size, mtime, source_id, relative_path, parent_path, created_at, updated_at, status, last_seen)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'present', ?)
       ON CONFLICT(file_id) DO UPDATE SET
@@ -856,7 +865,28 @@ export class DatabaseManager {
         updated_at = excluded.updated_at,
         status = 'present',
         last_seen = excluded.last_seen
-    `).run(fileId, filePath, name, extension, size, mtime, sourceId, relativePath || null, parentPath ?? null, now, now, now);
+    `);
+
+    db.transaction(() => {
+      // Nested sources share records. A child watcher must not take ownership
+      // from the source that indexed the previous revision.
+      const owner = findOwner.get(filePath, fileId) as
+        { source_id: number; source_path: string } | undefined;
+      const ownerId = owner?.source_id ?? sourceId;
+      const storedRelativePath = owner && ownerId !== sourceId
+        ? path.relative(owner.source_path, filePath).split(path.sep).join('/')
+        : relativePath;
+      const storedParentPath = owner && ownerId !== sourceId && storedRelativePath
+        ? this.normalizeParentPathFromRelative(storedRelativePath)
+        : parentPath;
+
+      // The ID identifies a content revision. Cascades discard obsolete analysis
+      // and placements, while an unchanged ID retains both. Roll back everything
+      // if inserting the replacement fails.
+      removeOldRevisions.run(filePath, fileId);
+      upsert.run(fileId, filePath, name, extension, size, mtime, ownerId,
+        storedRelativePath || null, storedParentPath ?? null, now, now, now);
+    })();
   }
 
   async getFilesBySource(sourceId: number, query?: string, parentPath?: string | null, limit?: number, offset?: number): Promise<FileRecord[]> {
@@ -1364,8 +1394,8 @@ export class DatabaseManager {
     const now = Date.now();
     
     const stmt = db.prepare(`
-      INSERT INTO files (file_id, path, name, extension, size, mtime, source_id, relative_path, parent_path, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO files (file_id, path, name, extension, size, mtime, source_id, relative_path, parent_path, created_at, updated_at, status, last_seen)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'present', ?)
       ON CONFLICT(file_id) DO UPDATE SET
         path = excluded.path,
         name = excluded.name,
@@ -1374,13 +1404,15 @@ export class DatabaseManager {
         mtime = excluded.mtime,
         relative_path = excluded.relative_path,
         parent_path = excluded.parent_path,
-        updated_at = excluded.updated_at
+        updated_at = excluded.updated_at,
+        status = 'present',
+        last_seen = excluded.last_seen
     `);
 
     // Use transaction for batch inserts
     const insertTransaction = db.transaction((fileBatch: typeof files) => {
       for (const file of fileBatch) {
-        stmt.run(file.fileId, file.filePath, file.name, file.extension, file.size, file.mtime, file.sourceId, file.relativePath || null, file.parentPath ?? null, now, now);
+        stmt.run(file.fileId, file.filePath, file.name, file.extension, file.size, file.mtime, file.sourceId, file.relativePath || null, file.parentPath ?? null, now, now, now);
       }
     });
 
@@ -1738,17 +1770,18 @@ export class DatabaseManager {
     }
 
     // For large sets: process DB results in chunks to avoid memory issues
-    // Use LIMIT/OFFSET to process in batches instead of loading all at once
+    // Advance by immutable row IDs: deleting a page must not shift the next one.
     const CHUNK_SIZE = 10000; // Process 10k file_ids at a time
     let totalDeleted = 0;
-    let offset = 0;
+    let lastId = 0;
     let hasMore = true;
 
     const selectStmt = db.prepare(`
-      SELECT file_id 
+      SELECT id, file_id
       FROM files 
-      WHERE source_id = ?
-      LIMIT ? OFFSET ?
+      WHERE source_id = ? AND id > ?
+      ORDER BY id
+      LIMIT ?
     `);
 
     const deleteStmt = db.prepare(`DELETE FROM files WHERE file_id = ?`);
@@ -1760,7 +1793,7 @@ export class DatabaseManager {
 
     while (hasMore) {
       // Get a chunk of file_ids from DB
-      const existingRows = selectStmt.all(sourceId, CHUNK_SIZE, offset) as Array<{ file_id: string }>;
+      const existingRows = selectStmt.all(sourceId, lastId, CHUNK_SIZE) as Array<{ id: number; file_id: string }>;
       
       if (existingRows.length === 0) {
         hasMore = false;
@@ -1789,7 +1822,7 @@ export class DatabaseManager {
       if (existingRows.length < CHUNK_SIZE) {
         hasMore = false;
       } else {
-        offset += CHUNK_SIZE;
+        lastId = existingRows[existingRows.length - 1].id;
       }
     }
 
@@ -2239,28 +2272,18 @@ export class DatabaseManager {
   }
 
   /**
-   * Get only top-level virtual placements (one level deep: /FolderName/file.ext).
-   * Optimized for building initial folder structure without loading all 220k+ placements.
-   * 
-   * @param sourceId - Optional source ID to filter by
-   * @returns Virtual placements with pattern /FolderName/file.ext (excludes deeper paths)
+   * Aggregate every visible descendant into its top-level virtual folder.
+   * Returns one row per folder regardless of the number or depth of placements.
+   * Files directly under '/' are loaded separately as file nodes.
    */
-  async getTopLevelVirtualPlacements(sourceId?: number): Promise<VirtualPlacement[]> {
+  async getTopLevelVirtualFolders(sourceId?: number): Promise<VirtualFolderSummary[]> {
     const db = this.ensureReady();
     let sql = `
-      SELECT
-        vp.id,
-        vp.file_id,
-        vp.virtual_path,
-        vp.tags,
-        vp.confidence,
-        vp.reason,
-        vp.planner_version,
-        vp.created_at
+      WITH scoped_paths AS (
+      SELECT SUBSTR(vp.virtual_path, 2) AS relative_path
       FROM virtual_placements vp
       INNER JOIN files f ON vp.file_id = f.file_id
       WHERE (f.status IS NULL OR f.status = 'present')
-        AND (LENGTH(vp.virtual_path) - LENGTH(REPLACE(vp.virtual_path, '/', ''))) = 2
     `;
     const params: Array<string | number> = [];
 
@@ -2273,29 +2296,17 @@ export class DatabaseManager {
       params.push(...this.getPathScopeParams(source.path));
     }
 
-    sql += ` ORDER BY vp.virtual_path`;
+    sql += `
+      )
+      SELECT '/' || SUBSTR(relative_path, 1, INSTR(relative_path, '/') - 1) AS path,
+        COUNT(*) AS fileCount
+      FROM scoped_paths
+      WHERE INSTR(relative_path, '/') > 1
+      GROUP BY path
+      ORDER BY path
+    `;
 
-    const rows = db.prepare(sql).all(...params) as Array<{
-      id: number;
-      file_id: string;
-      virtual_path: string;
-      tags: string;
-      confidence: number;
-      reason: string;
-      planner_version: string;
-      created_at: number;
-    }>;
-
-    return rows.map((row) => ({
-      id: row.id,
-      file_id: row.file_id,
-      virtual_path: row.virtual_path,
-      tags: row.tags,
-      confidence: row.confidence,
-      reason: row.reason,
-      planner_version: row.planner_version,
-      created_at: row.created_at,
-    }));
+    return db.prepare(sql).all(...params) as VirtualFolderSummary[];
   }
 
   /**

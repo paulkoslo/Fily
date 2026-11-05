@@ -7,35 +7,12 @@ const path = require('node:path');
  *
  * Why lazy loading:
  * - DatabaseManager depends on native better-sqlite3.
- * - On some local environments, native module may not match Node ABI.
- * - Lazy load lets tests decide to skip integration cases gracefully.
+ * - Integration tests load it only when creating their isolated database.
+ * - A missing native binding is a test failure, never a silent skip.
  */
 function loadDatabaseManager() {
   const { DatabaseManager } = require('../dist/db');
   return DatabaseManager;
-}
-
-/**
- * Check if DB integration tests can run in this environment.
- * Returns false when native better-sqlite3 cannot be loaded.
- */
-function canUseDatabaseIntegration() {
-  let tempDir = null;
-  try {
-    const DatabaseManager = loadDatabaseManager();
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fily-db-check-'));
-    const dbPath = path.join(tempDir, 'check.db');
-    const db = new DatabaseManager(dbPath);
-    // close() is async in type signature; we only need best-effort cleanup here.
-    db.close();
-    fs.rmSync(tempDir, { recursive: true, force: true });
-    return true;
-  } catch {
-    if (tempDir) {
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    }
-    return false;
-  }
 }
 
 /**
@@ -49,9 +26,13 @@ function createTempDbContext(prefix = 'fily-test-') {
   const DatabaseManager = loadDatabaseManager();
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   const dbPath = path.join(tempDir, 'test.db');
-  const db = new DatabaseManager(dbPath);
-
-  return { db, dbPath, tempDir };
+  try {
+    const db = new DatabaseManager(dbPath);
+    return { db, dbPath, tempDir };
+  } catch (error) {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    throw new Error(`Database integration setup failed. Run npm run rebuild, then npm run doctor. ${error.message}`, { cause: error });
+  }
 }
 
 /**
@@ -166,5 +147,4 @@ module.exports = {
   withTempDb,
   createSource,
   insertIndexedFile,
-  canUseDatabaseIntegration,
 };

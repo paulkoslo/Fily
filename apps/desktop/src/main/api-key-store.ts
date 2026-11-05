@@ -21,6 +21,8 @@ export type MultiApiKeyStatus = {
 type ApiKeyStoreOptions = {
   appName?: string;
   baseEnvPaths?: string[];
+  /** Override for isolated development/test profiles. */
+  userDataPath?: string;
 };
 
 export class ApiKeyStore {
@@ -32,7 +34,7 @@ export class ApiKeyStore {
   constructor(options: ApiKeyStoreOptions = {}) {
     this.appName = options.appName ?? 'Fily';
     this.baseEnvPaths = options.baseEnvPaths ?? [];
-    this.userDataPath = path.join(os.homedir(), 'Library', 'Application Support', this.appName);
+    this.userDataPath = options.userDataPath ?? path.join(os.homedir(), 'Library', 'Application Support', this.appName);
     this.userEnvPath = path.join(this.userDataPath, '.env');
   }
 
