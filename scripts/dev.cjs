@@ -1,5 +1,6 @@
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const { pathToFileURL } = require('node:url');
 
 const root = path.resolve(__dirname, '..');
 let server;
@@ -18,10 +19,12 @@ process.on('SIGINT', () => stop());
 process.on('SIGTERM', () => stop());
 
 (async () => {
-  const { createServer } = await import('vite');
+  const vite = require.resolve('vite', { paths: [path.join(root, 'apps/ui')] });
+  const { createServer } = await import(pathToFileURL(vite).href);
   server = await createServer({
     root: path.join(root, 'apps/ui'),
     configFile: path.join(root, 'apps/ui/vite.config.ts'),
+    ...(process.argv.includes('--smoke') ? { server: { port: 0, strictPort: false } } : {}),
   });
   if (stopping) return server.close();
   // listen() verifies this process owns the configured port before Electron
@@ -32,7 +35,7 @@ process.on('SIGTERM', () => stop());
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
   const args = process.argv.includes('--smoke')
-    ? [path.join(root, 'scripts/smoke-desktop.cjs'), '--dev'] : ['.'];
+    ? [path.join(root, 'scripts/smoke-desktop.cjs'), '--dev', '--renderer-url', server.resolvedUrls.local[0]] : ['.'];
   desktop = spawn(require('electron'), args, {
     cwd: path.join(root, 'apps/desktop'), stdio: 'inherit', env,
   });

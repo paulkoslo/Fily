@@ -55,7 +55,12 @@ app.whenReady().then(async () => {
   });
   window.webContents.on('preload-error', (_event, _file, error) => finish(error));
   window.webContents.on('render-process-gone', (_event, details) => finish(new Error(details.reason)));
-  const rendererUrl = process.argv.includes('--dev') ? 'http://localhost:5180/'
+  const urlFlag = process.argv.indexOf('--renderer-url');
+  const developmentUrl = urlFlag >= 0 ? process.argv[urlFlag + 1] : 'http://localhost:5180/';
+  const parsedDevUrl = new URL(developmentUrl);
+  assert.equal(parsedDevUrl.protocol, 'http:');
+  assert.equal(parsedDevUrl.hostname, 'localhost');
+  const rendererUrl = process.argv.includes('--dev') ? developmentUrl
     : pathToFileURL(path.resolve(__dirname, '../apps/ui/dist/index.html')).href;
   secureWindow(window, rendererUrl);
   const apiKeyStore = new ApiKeyStore({ userDataPath: profile });

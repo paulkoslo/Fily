@@ -13,7 +13,7 @@ if (files.length === 0) throw new Error('No core tests found');
 // Use the same native ABI as the app, including in CI. No per-runtime rebuilds
 // or optional integration tests: a broken SQLite binding must fail the suite.
 const child = spawn(require('electron'), [
-  '--test', ...args, ...files.map((name) => path.join(testDir, name)),
+  '--test', '--test-timeout=30000', ...args, ...files.map((name) => path.join(testDir, name)),
 ], {
   cwd: root,
   stdio: 'inherit',

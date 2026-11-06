@@ -11,6 +11,8 @@ export type LLMClientConfig = {
   provider: LLMProvider;
   apiKey: string;
   model?: string;
+  /** Transport injection for offline contract tests. */
+  fetch?: typeof globalThis.fetch;
   /** Optional site URL for OpenRouter attribution */
   siteUrl?: string;
   /** Optional site name for OpenRouter attribution */
@@ -78,6 +80,7 @@ export class LLMClient {
       this.client = new OpenAI({
         baseURL: 'https://openrouter.ai/api/v1',
         apiKey: config.apiKey,
+        fetch: config.fetch,
         defaultHeaders: {
           'HTTP-Referer': config.siteUrl ?? 'https://github.com/fily-app',
           'X-Title': config.siteName ?? 'Fily',
@@ -88,6 +91,7 @@ export class LLMClient {
       this.model = mapToOpenAIModel(configuredModel);
       this.client = new OpenAI({
         apiKey: config.apiKey,
+        fetch: config.fetch,
       });
     }
   }

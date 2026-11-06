@@ -40,6 +40,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Reject high and critical dependency advisories
+        run: npm audit --audit-level=high
+
       - name: Verify native SQLite in the app runtime
         run: npm run doctor
 

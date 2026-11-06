@@ -35,7 +35,7 @@ Local validation: clean dependency installation, SQLite doctor, core/UI/desktop
 builds, 30 passing tests with zero skips, and an isolated desktop smoke test that
 renders the built UI and exercises preload/IPC against a synthetic library.
 Published as [PR #3](https://github.com/paulkoslo/Fily/pull/3), targeting `main`.
-GitHub-hosted Linux and macOS checks passed. The PR remains unmerged.
+GitHub-hosted Linux and macOS checks passed. Merged on 6 November 2026.
 
 This is the development/correctness milestone. Dependency security upgrades,
 renderer/IPC hardening, resumable AI jobs, extraction/OCR, Jev evaluation, and the
@@ -60,7 +60,7 @@ Implemented on `codex/desktop-security`, based on the foundation branch:
   valid IPC, hostile window IPC, forged source additions, traversal, CSP and popups.
 
 Published as [PR #4](https://github.com/paulkoslo/Fily/pull/4), targeting `main`
-and dependent on #3. Validation: 33 core tests and four desktop tests pass, with
+and dependent on #3. Merged on 6 November 2026. Validation: 33 core tests and four desktop tests pass, with
 zero skips; both desktop smoke modes and GitHub's Linux/macOS checks pass.
 
 ## Implementation status — encrypted credentials
@@ -86,8 +86,61 @@ Implemented on `codex/credential-storage`, based on the security branch:
 Validation: 33 core tests and 15 desktop tests pass (zero skips), and both built
 and development desktop smoke tests pass with isolated profiles.
 
-Dependency upgrades, database migration backups and recoverable AI processing
-remain outstanding before inviting testers.
+Published as [PR #5](https://github.com/paulkoslo/Fily/pull/5), merged on
+6 November 2026. Main CI passed after all three merges.
+
+## Implementation status — dependency security
+
+Implemented on `codex/dependency-security`:
+
+- Upgrade Electron 27 to 45, rebuild/native tooling, SQLite, Vite, OpenAI SDK,
+  Zod and document parsers. Node 22.12+ is required.
+- SheetJS uses its official versioned 0.20.3 distribution, pinned by lockfile
+  integrity; the old npm registry release is no longer used.
+- PDF extraction uses the maintained parser API, disables PDF evaluation,
+  releases parser resources, and leaves global stdout/stderr untouched.
+  Textless PDFs explicitly report that OCR is needed and no longer store a
+  base64 copy of the original document in metadata. OCR is still outstanding.
+- Critical/high dependency advisories are resolved. Moderate minimatch advisories
+  remain in electron-builder tooling; upstream fixes are still needed. Avoid
+  processing untrusted source checkouts with packaging tools. Cross-major glob
+  overrides were rejected because they produced incompatible dependency trees.
+- Extraction deadlines are cleared on success and failure. An isolated process
+  regression test checks that completed work does not retain a 60-second timer.
+- Development smoke tests select a temporary port so normal app sessions can
+  keep running. Provider SDK regression tests use synthetic responses only.
+
+Validation: clean `npm ci`, a valid dependency tree, 41 core and 15 desktop
+passing tests, both desktop smoke modes, and unsigned arm64 packaging pass.
+`npm audit` reports six moderate tooling entries, zero high/critical entries;
+CI now rejects high/critical advisories. Tests make no paid API calls.
+
+Published as [PR #6](https://github.com/paulkoslo/Fily/pull/6), targeting main
+and left unmerged. Linux/macOS checks passed.
+
+## Implementation status — library migration recovery
+
+Implemented on `codex/migration-recovery`, stacked on #6:
+
+- Existing libraries receive a private, integrity-checked `VACUUM INTO` snapshot
+  before pending schema changes. The backup includes committed WAL pages, is
+  fsynced before migrations, and stays beside the library for manual recovery.
+- All pending migrations and version records run in one immediate transaction.
+  Failure rolls back schema and data together; foreign keys are checked before
+  commit. An unavailable backup directory prevents migration entirely.
+- Future/unknown schema versions are refused. Legacy ALTER operations check
+  column existence instead of swallowing unrelated SQLite errors.
+- Failed initialization closes its database handle, and startup errors appear in
+  a native dialog. README documents the backup location and manual restore.
+- Synthetic tests cover new/current libraries, WAL data, restrictive permissions,
+  verified restore and re-upgrade, rollback, failed/symlinked backup locations,
+  unversioned databases, incompatible versions and the real v5-to-v6 upgrade.
+
+Validation: 48 core and 15 desktop tests pass, with zero skips; built and
+development desktop smoke tests pass using isolated profiles.
+
+Recoverable AI processing, extraction coverage, model evaluation and the browser
+redesign remain outstanding before inviting testers.
 
 ## Product direction
 
