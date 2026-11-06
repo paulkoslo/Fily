@@ -38,6 +38,7 @@ export const OPTIMIZER_MAX_SUMMARY_WORDS = 100; // Max words for summary in opti
  * API call timeouts (milliseconds).
  */
 export const API_DEFAULT_TIMEOUT_MS = 180000; // 3 minutes default timeout
+export const API_TRANSCRIPTION_TIMEOUT_MS = 60000;
 export const API_BATCH_TIMEOUT_MS = 240000; // 4 minutes for batch processing
 
 /**
@@ -49,10 +50,9 @@ export const API_VISION_MAX_TOKENS = 20000; // Max tokens for vision API calls
 /**
  * WorkerPool settings.
  */
-export const WORKER_POOL_DEFAULT_MAX_WORKERS = 80; // Default concurrent workers
-export const WORKER_POOL_MAX_ITERATIONS = 10000; // Safety limit for queue waiting
-export const WORKER_POOL_CHECK_INTERVAL_MS = 50; // How often to check queue
-export const PIPELINE_WORKER_POOL_MAX_WORKERS = 50; // Default for extraction/planner execution pipelines
+export const WORKER_POOL_DEFAULT_MAX_WORKERS = 4; // Default concurrent workers
+export const WORKER_POOL_DRAIN_TIMEOUT_MS = 300000; // Maximum wait for queued/active work
+export const PIPELINE_WORKER_POOL_MAX_WORKERS = 4; // Default for extraction/planner execution pipelines
 export const VIRTUAL_TREE_FULL_BUILD_MAX_FILES = 10000;
 
 // ============================================================================

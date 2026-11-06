@@ -18,6 +18,8 @@ export interface FileProcessingInput {
   extractedText?: string;
   metadata?: Record<string, any>;
   imageBuffer?: Buffer;
+  /** Deferred read, invoked only after a batch obtains a worker slot. */
+  loadImage?: (signal?: AbortSignal) => Promise<Buffer>;
   imageMimeType?: string;
 }
 

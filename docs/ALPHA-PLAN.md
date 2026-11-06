@@ -139,8 +139,37 @@ Implemented on `codex/migration-recovery`, stacked on #6:
 Validation: 48 core and 15 desktop tests pass, with zero skips; built and
 development desktop smoke tests pass using isolated profiles.
 
-Recoverable AI processing, extraction coverage, model evaluation and the browser
-redesign remain outstanding before inviting testers.
+Published as [PR #7](https://github.com/paulkoslo/Fily/pull/7), targeting main
+and left unmerged. Linux/macOS CI passed.
+
+## Implementation status — request lifecycle and bounded images
+
+Implemented on `codex/ai-request-lifecycle`, stacked on #7:
+
+- Four API slots by default, FIFO scheduling, validated pool sizes, explicit
+  drain failures, settled queued promises on shutdown, and abort signals for
+  active/nested requests. These are asynchronous slots, not OS worker threads.
+- API and batch deadlines begin during execution, clear their timers, and abort
+  the SDK HTTP transport. Automatic SDK retries are disabled. Caller/pool
+  cancellation propagates instead of becoming fallback success.
+- Summary/tag batching awaits each persistence callback once and propagates
+  failed callbacks. Invalid images also pass through persistence callbacks.
+- Image loading moves inside active batches instead of eagerly reading the
+  whole collection. File reads are size bounded, source access is rechecked at
+  execution, and hydrated buffers are released between batches.
+- Core/desktop builds clear old compiled output and force emission. Testing
+  found obsolete February agent files shadowing current directory modules on
+  an existing checkout; clean CI alone could not expose that problem.
+
+Validation: 67 core and 15 desktop tests pass with zero skips, including
+transport abort, no hidden retries, FIFO/concurrency, queue cancellation, late
+callback rejection, bounded image loading and process-exit regression tests.
+Both desktop smoke modes and unsigned arm64 packaging pass.
+
+This is request plumbing and memory control. It does not yet add persisted job
+states, restart/resume, per-file AI provenance, visible cancellation/retry, or
+provider budget reporting. Provider-error fallbacks still need honest statuses.
+Extraction/OCR, Jev evaluation and the browser redesign remain outstanding.
 
 ## Product direction
 

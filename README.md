@@ -10,7 +10,7 @@ Fily solves the problem of disorganized files scattered across your system. Inst
 
 ### Key Features
 
-- **Large-Scale Processing**: Optimized for processing **thousands of files** with configurable worker pools (80 default workers, 50 pipeline workers)
+- **Large-Scale Processing**: Optimized for processing **thousands of files** with configurable worker pools (four concurrent requests by default)
 - **Virtual Organization**: AI-powered virtual folder structure that organizes files by content, context, and meaning
 - **Non-Destructive**: Files are never moved, renamed, or deleted—your originals remain untouched
 - **Multiple Source Folders**: Index and organize files from multiple directories simultaneously
@@ -198,7 +198,7 @@ Fily operates in five main stages:
 
 1. **Index**: Crawls your source directories, extracts file metadata, and stores everything in a local SQLite database
 2. **Extract Raw Content**: Extracts raw content from files using specialized extractors for PDFs, documents, images, audio, and more
-3. **AI Processing**: Uses AI agents to generate summaries and tags in concurrent batches (utilizing 80 workers for parallel processing)
+3. **AI Processing**: Uses AI agents to generate summaries and tags in concurrent batches (four concurrent requests by default)
 4. **Organize**: Creates virtual folder placements using taxonomy generation and optimization
 5. **Browse**: Presents files in an intelligent virtual folder tree while preserving your original file structure
 
@@ -383,7 +383,7 @@ See [AGENTS.md](./AGENTS.md) for the full architecture vision.
 | 2 | Virtual folder tree UI |
 | 3 | Content extraction pipeline |
 | 4 | AI planner integration, taxonomy generation, optimizer |
-| 4.5 | **Worker pool optimizations** ✅ - concurrent batch processing (80 workers), efficient API usage, cost-effective processing for thousands of files |
+| 4.5 | **Worker pool optimizations** ✅ - concurrent batch processing (four concurrent requests by default), efficient API usage, cost-effective processing for thousands of files |
 | 5 | **Production Readiness & Stability** ✅ (v1.1.1) - Modular architecture, centralized config, parallel processing, validation, optimizer enhancements - **Ready for thousands of files** |
 
 ### Planned Improvements
@@ -395,7 +395,7 @@ See [AGENTS.md](./AGENTS.md) for the full architecture vision.
 | | - ~~OpenRouter + OpenAI multi-provider support~~ ✅ |
 | | - ~~In-app model selection~~ ✅ |
 | | - ~~Error recovery and graceful degradation~~ ✅ (comprehensive fallback results, Promise.allSettled for batch failures) |
-| | - ~~Worker pool optimizations~~ ✅ (80 concurrent workers, parallel batch processing) |
+| | - ~~Worker pool optimizations~~ ✅ (four concurrent requests by default, parallel batch processing) |
 | | - ~~Cost-efficient processing~~ ✅ (can process thousands of files for just a few dollars) |
 | | - ~~Modular agent architecture~~ ✅ (all agents split into organized folders with clear separation) |
 | | - ~~Centralized constants~~ ✅ (all configuration in constants.ts for easy adjustment) |
@@ -475,3 +475,21 @@ To restore a snapshot:
 Restore is a manual recovery operation; the app never silently replaces your
 library. The regression suite verifies restoring and upgrading a snapshot using
 synthetic libraries only.
+
+### AI request scheduling
+
+AI batches share a bounded asynchronous request pool (four slots by default,
+configured in `packages/core/src/planner/constants.ts`). These slots limit API
+work; they are not background OS threads for document parsing. API deadlines
+start when work runs, propagate abort signals to the SDK transport, and release
+their timers when finished. Automatic SDK retries are disabled; explicit retry
+policies and budget reporting are still planned.
+
+Images are read only for active batches, with a bounded payload size. Source
+access is rechecked when queued image reads begin. Builds clear stale emitted
+modules before compiling, including files left by older project versions.
+
+The request pool supports shutdown/cancellation internally. Persistent jobs,
+restart/resume, per-file AI provenance, and a user-facing cancel/retry workflow
+are subsequent work; fallback summaries can still be produced on provider
+errors. This milestone does not claim that every document has been analyzed.
