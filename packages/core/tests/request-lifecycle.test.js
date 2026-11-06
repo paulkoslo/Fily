@@ -99,3 +99,25 @@ test('shutdown aborts the audio SDK transport and returns a structured extractio
     assert.equal(aborted, 1); await pool.waitForCompletion();
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('optimizer batches can fill the pool without deadlocking on nested API slots', async () => {
+  const { OptimizerAgent } = require('../dist/agents/optimizer-agent');
+  const pool = new WorkerPool(2); const optimizer = new OptimizerAgent(pool);
+  optimizer.batchSize = 1;
+  let calls = 0; let active = 0; let peak = 0;
+  optimizer.llmClient = { chatCompletion: async () => {
+    calls++; peak = Math.max(peak, ++active);
+    try { await delay(3); return JSON.stringify({ optimizations: [], newFolders: [] }); }
+    finally { active--; }
+  } };
+  const files = Array.from({ length: 5 }, (_, i) => ({
+    card: { file_id: `file-${i}`, source_id: 1, name: `${i}.txt`, extension: 'txt', relative_path: `${i}.txt`, tags: [], summary: 'Synthetic report' },
+    currentPlacement: { file_id: `file-${i}`, virtual_path: `/Reports/${i}.txt`, confidence: .2, reason: 'Needs review', tags: [] },
+  }));
+  const deadline = setTimeout(() => pool.shutdown(), 2000);
+  try {
+    await optimizer.optimizePlacements({ folders: [], rules: [] }, files);
+    assert.equal(calls, 5); assert.equal(peak, 2);
+    await pool.waitForCompletion();
+  } finally { clearTimeout(deadline); pool.shutdown(); }
+});

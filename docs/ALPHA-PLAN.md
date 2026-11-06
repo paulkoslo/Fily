@@ -157,11 +157,13 @@ Implemented on `codex/ai-request-lifecycle`, stacked on #7:
 - Image loading moves inside active batches instead of eagerly reading the
   whole collection. File reads are size bounded, source access is rechecked at
   execution, and hydrated buffers are released between batches.
+- Optimizer batches no longer acquire a second slot for their nested API call;
+  this could deadlock when all slots were occupied by batches awaiting a slot.
 - Core/desktop builds clear old compiled output and force emission. Testing
   found obsolete February agent files shadowing current directory modules on
   an existing checkout; clean CI alone could not expose that problem.
 
-Validation: 67 core and 15 desktop tests pass with zero skips, including
+Validation: 68 core and 15 desktop tests pass with zero skips, including
 transport abort, no hidden retries, FIFO/concurrency, queue cancellation, late
 callback rejection, bounded image loading and process-exit regression tests.
 Both desktop smoke modes and unsigned arm64 packaging pass.
