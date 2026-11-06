@@ -432,6 +432,8 @@ function App() {
           setIsApiKeyModalOpen(!status.hasKey);
         } else {
           setApiKeyStatus({ hasKey: false });
+          setApiKeySettingsError(status.error || 'Credential storage is unavailable');
+          setApiKeyModalError(status.error || 'Credential storage is unavailable');
           setIsApiKeyModalOpen(true);
         }
       } catch (err) {

@@ -159,7 +159,7 @@ export function Settings({
                       Saved key ({apiKeyStatus.provider === 'openrouter' ? 'OpenRouter' : 'OpenAI'}):{' '}
                       <span className="api-key-mask">{apiKeyStatus.maskedKey ?? '••••••••'}</span>
                     </span>
-                    <p>Update or remove your API key. The key is stored locally and never leaves this device.</p>
+                    <p>Keys saved here use OS-backed encryption and authenticate requests to your chosen AI provider.</p>
                   </>
                 ) : (
                   <p>No API key saved. Add one to enable AI features.</p>

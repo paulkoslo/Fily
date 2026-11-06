@@ -226,8 +226,10 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC_CHANNELS.GET_API_KEY_STATUS, async (): Promise<GetApiKeyStatusResponse> => {
     const status = apiKeyStore.getStatus();
     const multiStatus = apiKeyStore.getMultiStatus();
+    const error = apiKeyStore.getStorageError();
     return GetApiKeyStatusResponseSchema.parse({
-      success: true,
+      success: !error,
+      ...(error ? { error } : {}),
       ...status,
       multiStatus,
     });
@@ -266,6 +268,7 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC_CHANNELS.DELETE_API_KEY, async (_event, request?: unknown): Promise<DeleteApiKeyResponse> => {
     try {
       const parsed = DeleteApiKeyRequestSchema.safeParse(request ?? {});
+      if (!parsed.success) return { success: false, error: 'Invalid delete-key request' };
       // If no keyType specified, delete the currently active provider's key
       const activeProvider = apiKeyStore.getActiveProvider();
       console.log(`[IPC] DELETE_API_KEY: activeProvider=${activeProvider}, request keyType=${parsed.success ? parsed.data.keyType : 'parse failed'}`);

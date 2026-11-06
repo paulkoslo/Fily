@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as dotenv from 'dotenv';
+import { EncryptedCredentialStore, validateApiKey, writePrivateFile, type Credentials, type SecretCipher } from './credential-store';
 
 export type ApiKeyType = 'openrouter' | 'openai';
 
@@ -23,6 +24,7 @@ type ApiKeyStoreOptions = {
   baseEnvPaths?: string[];
   /** Override for isolated development/test profiles. */
   userDataPath?: string;
+  cipher?: SecretCipher;
 };
 
 export class ApiKeyStore {
@@ -30,76 +32,49 @@ export class ApiKeyStore {
   private readonly baseEnvPaths: string[];
   private readonly userDataPath: string;
   private readonly userEnvPath: string;
+  private readonly credentials: EncryptedCredentialStore;
+  private storageError: string | null = null;
 
   constructor(options: ApiKeyStoreOptions = {}) {
     this.appName = options.appName ?? 'Fily';
     this.baseEnvPaths = options.baseEnvPaths ?? [];
     this.userDataPath = options.userDataPath ?? path.join(os.homedir(), 'Library', 'Application Support', this.appName);
     this.userEnvPath = path.join(this.userDataPath, '.env');
+    this.credentials = new EncryptedCredentialStore(this.userDataPath, options.cipher);
   }
 
   /**
-   * Attempt to load environment variables from the known locations.
-   * Prefers project .env files but falls back to user data storage.
-   * Loads both OpenRouter and OpenAI keys if available.
+   * Load explicit developer settings, then migrate and load stored credentials.
+   * Stored provider keys override environment values. Call after Electron is ready.
    */
   loadEnv(extraPath?: string | null): void {
-    const candidatePaths = [...this.baseEnvPaths];
-    if (extraPath) {
-      candidatePaths.push(extraPath);
-    }
-
-    let envLoaded = false;
-    for (const envPath of candidatePaths) {
-      if (!envPath || !fs.existsSync(envPath)) {
-        continue;
-      }
-      const result = dotenv.config({ path: envPath });
-      if (!result.error) {
-        envLoaded = true;
-        console.log(`[Main] Loaded .env from: ${envPath}`);
+    this.storageError = null;
+    try {
+      // Explicit developer environment files remain externally managed. Never
+      // modify them or load unrelated environment settings into the main process.
+      for (const envPath of [...this.baseEnvPaths, ...(extraPath ? [extraPath] : [])]) {
+        if (!fs.existsSync(envPath)) continue;
+        // A working-directory or symlink alias must not bypass migration and
+        // load the legacy private file as an explicit developer environment.
+        if (fs.existsSync(this.userEnvPath) &&
+            fs.realpathSync.native(envPath) === fs.realpathSync.native(this.userEnvPath)) continue;
+        const config = dotenv.parse(fs.readFileSync(envPath, 'utf8'));
+        for (const key of ['OPENROUTER_API_KEY', 'OPENAI_API_KEY'] as const) {
+          if (!process.env[key] && config[key]) process.env[key] = validateApiKey(config[key]);
+        }
+        if (!process.env.LLM_MODEL && config.LLM_MODEL) process.env.LLM_MODEL = config.LLM_MODEL;
         break;
       }
-    }
-
-    // Load user-stored keys (these can override .env values)
-    const userKeys = this.readUserApiKeys();
-    
-    if (userKeys.openrouter) {
-      process.env.OPENROUTER_API_KEY = userKeys.openrouter;
-      envLoaded = true;
-      console.log(`[Main] Loaded OpenRouter API key from user data: ${this.userEnvPath}`);
-    }
-    
-    if (userKeys.openai) {
-      process.env.OPENAI_API_KEY = userKeys.openai;
-      envLoaded = true;
-      console.log(`[Main] Loaded OpenAI API key from user data: ${this.userEnvPath}`);
-    }
-    
-    if (!envLoaded) {
-      this.ensureUserEnvFile();
-      console.warn(`[Main] No .env found. Created placeholder at: ${this.userEnvPath}`);
-    }
-
-    // Load LLM model from user config if not set via env
-    if (!process.env.LLM_MODEL) {
-      const userModel = this.getLLMModel();
-      if (userModel) {
-        process.env.LLM_MODEL = userModel;
-        console.log(`[Main] Loaded LLM model from user data: ${userModel}`);
+      const keys = this.migrateLegacyKeys();
+      if (keys.openrouter) process.env.OPENROUTER_API_KEY = keys.openrouter;
+      if (keys.openai) process.env.OPENAI_API_KEY = keys.openai;
+      if (!process.env.LLM_MODEL) {
+        const model = this.getLLMModel();
+        if (model) process.env.LLM_MODEL = model;
       }
-    }
-
-    // Log which provider will be active
-    const activeProvider = this.getActiveProvider();
-    if (activeProvider) {
-      console.log(`[Main] Active LLM provider: ${activeProvider}`);
-    }
-    
-    const model = process.env.LLM_MODEL;
-    if (model) {
-      console.log(`[Main] LLM model: ${model}`);
+    } catch (error) {
+      this.storageError = error instanceof Error ? error.message : 'Credential storage is unavailable';
+      console.warn('[Main] Credential storage unavailable; existing files were preserved.');
     }
   }
 
@@ -123,6 +98,10 @@ export class ApiKeyStore {
 
   getUserEnvPath(): string {
     return this.userEnvPath;
+  }
+
+  getStorageError(): string | null {
+    return this.storageError;
   }
 
   /**
@@ -172,13 +151,11 @@ export class ApiKeyStore {
    * Save an API key for a specific provider
    */
   saveKey(rawKey: string, keyType: ApiKeyType = 'openai'): ApiKeyStatus {
-    const apiKey = rawKey.trim();
-    if (!apiKey) {
-      throw new Error('API key cannot be empty');
-    }
-
-    this.ensureUserEnvFile();
-    this.writeEnvValue(apiKey, keyType);
+    const apiKey = validateApiKey(rawKey);
+    const keys = this.migrateLegacyKeys();
+    keys[keyType] = apiKey;
+    this.credentials.write(keys);
+    this.storageError = null;
     
     if (keyType === 'openrouter') {
       process.env.OPENROUTER_API_KEY = apiKey;
@@ -195,10 +172,10 @@ export class ApiKeyStore {
    * Delete an API key for a specific provider
    */
   deleteKey(keyType: ApiKeyType = 'openai'): ApiKeyStatus {
-    if (fs.existsSync(this.userEnvPath)) {
-      this.writeEnvValue(null, keyType);
-      console.log(`[Main] Removed ${keyType === 'openrouter' ? 'OpenRouter' : 'OpenAI'} API key from user data`);
-    }
+    const keys = this.migrateLegacyKeys();
+    delete keys[keyType];
+    this.credentials.write(keys);
+    this.storageError = null;
     
     if (keyType === 'openrouter') {
       delete process.env.OPENROUTER_API_KEY;
@@ -244,71 +221,47 @@ export class ApiKeyStore {
    * Save the LLM model configuration
    */
   saveLLMModel(model: string): string {
-    this.ensureUserEnvFile();
+    this.migrateLegacyKeys();
     
     const config = fs.existsSync(this.userEnvPath)
       ? dotenv.parse(fs.readFileSync(this.userEnvPath, 'utf8'))
       : {};
 
     config.LLM_MODEL = model;
-    process.env.LLM_MODEL = model;
 
     const content = Object.entries(config)
-      .map(([key, val]) => `${key}=${val}`)
+      .map(([key, val]) => `${key}=${JSON.stringify(val)}`)
       .join('\n');
 
-    fs.writeFileSync(this.userEnvPath, `${content}\n`, { encoding: 'utf8', mode: 0o600 });
+    writePrivateFile(this.userEnvPath, `${content}\n`);
+    process.env.LLM_MODEL = model;
     console.log(`[Main] Saved LLM model: ${model}`);
     
     return model;
   }
 
-  private ensureUserEnvFile(): void {
-    if (!fs.existsSync(this.userDataPath)) {
-      fs.mkdirSync(this.userDataPath, { recursive: true });
-    }
-    if (!fs.existsSync(this.userEnvPath)) {
-      fs.writeFileSync(
-        this.userEnvPath,
-        '# Fily API Keys\n# Priority: OPENROUTER_API_KEY > OPENAI_API_KEY\nOPENROUTER_API_KEY=\nOPENAI_API_KEY=\n',
-        { encoding: 'utf8', mode: 0o600 }
-      );
-    }
-  }
-
-  /**
-   * Read all user API keys from the env file
-   */
-  private readUserApiKeys(): { openrouter: string | null; openai: string | null } {
-    if (!fs.existsSync(this.userEnvPath)) {
-      return { openrouter: null, openai: null };
-    }
-    const config = dotenv.parse(fs.readFileSync(this.userEnvPath, 'utf8'));
-    return {
-      openrouter: config.OPENROUTER_API_KEY?.trim() || null,
-      openai: config.OPENAI_API_KEY?.trim() || null,
-    };
-  }
-
-  private writeEnvValue(value: string | null, keyType: ApiKeyType = 'openai'): void {
+  private migrateLegacyKeys(): Credentials {
     const config = fs.existsSync(this.userEnvPath)
-      ? dotenv.parse(fs.readFileSync(this.userEnvPath, 'utf8'))
-      : {};
-
-    const envKey = keyType === 'openrouter' ? 'OPENROUTER_API_KEY' : 'OPENAI_API_KEY';
-    
-    if (value) {
-      config[envKey] = value;
-    } else {
-      delete config[envKey];
+      ? dotenv.parse(fs.readFileSync(this.userEnvPath, 'utf8')) : {};
+    const stored = this.credentials.read();
+    const legacy: Credentials = {};
+    if (config.OPENROUTER_API_KEY?.trim()) legacy.openrouter = validateApiKey(config.OPENROUTER_API_KEY);
+    if (config.OPENAI_API_KEY?.trim()) legacy.openai = validateApiKey(config.OPENAI_API_KEY);
+    const keys = { ...legacy, ...stored };
+    if (Object.keys(legacy).length > 0) {
+      this.credentials.write(keys);
+      const verified = this.credentials.read();
+      if (verified.openrouter !== keys.openrouter || verified.openai !== keys.openai) {
+        throw new Error('Credential migration could not be verified; legacy configuration was preserved.');
+      }
     }
-
-    const content = Object.entries(config)
-      .map(([key, val]) => `${key}=${val}`)
-      .join('\n');
-
-    const finalContent = content ? `${content}\n` : '';
-    fs.writeFileSync(this.userEnvPath, finalContent, { encoding: 'utf8', mode: 0o600 });
+    if ('OPENROUTER_API_KEY' in config || 'OPENAI_API_KEY' in config) {
+      delete config.OPENROUTER_API_KEY;
+      delete config.OPENAI_API_KEY;
+      const content = Object.entries(config).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join('\n');
+      writePrivateFile(this.userEnvPath, content + '\n');
+    }
+    return keys;
   }
 
   private maskKey(key: string): string {

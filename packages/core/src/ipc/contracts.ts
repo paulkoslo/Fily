@@ -558,7 +558,8 @@ export const GetApiKeyStatusResponseSchema = z.object({
 export type GetApiKeyStatusResponse = z.infer<typeof GetApiKeyStatusResponseSchema>;
 
 export const SaveApiKeyRequestSchema = z.object({
-  apiKey: z.string().min(10, 'API key must be at least 10 characters'),
+  apiKey: z.string().trim().min(10, 'API key must be at least 10 characters').max(4096)
+    .regex(/^[^\s\x00-\x1f\x7f]+$/, 'API key must not contain whitespace or control characters'),
   keyType: ApiKeyTypeSchema.optional().default('openai'),
 });
 

@@ -58,8 +58,9 @@ app.whenReady().then(async () => {
   const rendererUrl = process.argv.includes('--dev') ? 'http://localhost:5180/'
     : pathToFileURL(path.resolve(__dirname, '../apps/ui/dist/index.html')).href;
   secureWindow(window, rendererUrl);
-  registerIpcHandlers(ipcMain, db, () => window, new WatcherManager(db),
-    new ApiKeyStore({ userDataPath: profile }), rendererUrl);
+  const apiKeyStore = new ApiKeyStore({ userDataPath: profile });
+  apiKeyStore.loadEnv();
+  registerIpcHandlers(ipcMain, db, () => window, new WatcherManager(db), apiKeyStore, rendererUrl);
   await window.loadURL(rendererUrl);
 
   const result = await window.webContents.executeJavaScript(`(async () => {
