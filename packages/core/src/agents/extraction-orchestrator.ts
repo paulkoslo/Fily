@@ -1,6 +1,7 @@
 import type { ExtractedContent } from '../extractors/types';
 import { SummaryTagAgent, type FileProcessingInput, type FileProcessingResult } from './summary-tag-agent';
 import type { WorkerPool } from './worker-pool';
+import { loadImageForAnalysis } from './image-input';
 
 // Re-export types for convenience
 export type { FileProcessingInput, FileProcessingResult };
@@ -313,73 +314,24 @@ export class ExtractionOrchestrator {
       extractedContent: ExtractedContent;
       metadata?: Record<string, any>;
       imagePath?: string; // Path for lazy image loading
+      loadImage?: (signal?: AbortSignal) => Promise<Buffer>;
     }>
   ): Promise<FileProcessingResult[]> {
-    // LAZY LOADING: Load image buffers only when needed (right before API call)
-    const inputs: FileProcessingInput[] = await Promise.all(
-      files.map(async ({ fileId, filePath, fileName, extension, extractedContent, metadata, imagePath }) => {
-        // Map content type
-        let contentType: 'text' | 'pdf' | 'document' | 'image' | 'audio' | 'video' = 'text';
-        if (extractedContent.contentType === 'pdf') {
-          contentType = 'pdf';
-        } else if (extractedContent.contentType === 'document') {
-          contentType = 'document';
-        } else if (extractedContent.contentType === 'image') {
-          contentType = 'image';
-        } else if (extractedContent.contentType === 'audio') {
-          contentType = 'audio';
-        } else if (extractedContent.contentType === 'video') {
-          contentType = 'video';
-        }
-
-        // LAZY LOAD: Only load image buffer now (right before API call)
-        let imageBuffer: Buffer | undefined;
-        if (contentType === 'image' && imagePath) {
-          try {
-            const fs = await import('fs/promises');
-            imageBuffer = await fs.readFile(imagePath);
-          } catch (error) {
-            console.warn(`[ExtractionOrchestrator] Failed to load image ${imagePath}:`, error);
-          }
-        } else if (metadata?.imageBuffer) {
-          // Fallback: use existing buffer if provided
-          imageBuffer = metadata.imageBuffer;
-        }
-
-        return {
-          fileId,
-          filePath,
-          fileName,
-          extension,
-          contentType,
-          extractedText: extractedContent.extractedText || undefined,
-          metadata: {
-            extension,
-            fileName,
-            filePath,
-            ...extractedContent.metadata,
-            ...metadata,
-            // Remove imageBuffer from metadata to avoid keeping it in memory
-            imageBuffer: undefined,
-          },
-          imageBuffer, // Only loaded when needed
-          imageMimeType: metadata?.imageMimeType,
-        };
-      })
-    );
-
-    const results = await this.summaryTagAgent.processBatch(inputs);
-    
-    // CRITICAL: Clear image buffers from results to free memory immediately
-    // The buffers are no longer needed after API call
-    for (const input of inputs) {
-      if (input.imageBuffer) {
-        // Clear reference to allow GC
-        (input as any).imageBuffer = undefined;
-      }
-    }
-    
-    return results;
+    const inputs: FileProcessingInput[] = files.map(({ fileId, filePath, fileName, extension, extractedContent, metadata, imagePath, loadImage }) => {
+      const supported = ['pdf', 'document', 'image', 'audio', 'video'];
+      const contentType = supported.includes(extractedContent.contentType)
+        ? extractedContent.contentType as FileProcessingInput['contentType'] : 'text';
+      const { imageBuffer, ...safeMetadata } = { ...extractedContent.metadata, ...metadata };
+      return {
+        fileId, filePath, fileName, extension, contentType,
+        extractedText: extractedContent.extractedText || undefined,
+        metadata: { extension, fileName, filePath, ...safeMetadata },
+        imageBuffer,
+        loadImage: loadImage ?? (imagePath ? (signal) => loadImageForAnalysis(imagePath, signal) : undefined),
+        imageMimeType: metadata?.imageMimeType ?? extractedContent.metadata?.mimeType,
+      };
+    });
+    return this.summaryTagAgent.processBatch(inputs);
   }
 
   private generateFallbackTags(filePath: string, fileName: string, extension: string): string[] {

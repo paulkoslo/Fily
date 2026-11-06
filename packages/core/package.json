@@ -5,15 +5,27 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./ipc": { "types": "./dist/ipc/contracts.d.ts", "default": "./dist/ipc/contracts.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./ipc": {
+      "types": "./dist/ipc/contracts.d.ts",
+      "default": "./dist/ipc/contracts.js"
+    }
   },
-  "typesVersions": { "*": { "ipc": ["dist/ipc/contracts.d.ts"] } },
+  "typesVersions": {
+    "*": {
+      "ipc": [
+        "dist/ipc/contracts.d.ts"
+      ]
+    }
+  },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc -b",
+    "build": "node ../../scripts/clean-build.cjs packages/core && tsc -b --force",
     "dev": "tsc -b --watch",
     "clean": "rm -rf dist",
     "benchmark": "tsx src/__benchmarks__/performance.benchmark.ts",
@@ -21,20 +33,19 @@
     "test:watch": "node ../../scripts/run-tests.cjs --watch"
   },
   "dependencies": {
-    "better-sqlite3": "^11.0.0",
+    "better-sqlite3": "^13.0.3",
     "dotenv": "^16.3.1",
-    "jszip": "^3.10.1",
-    "mammoth": "^1.11.0",
-    "openai": "^4.20.0",
-    "pdf-parse": "^1.1.1",
-    "xlsx": "^0.18.5",
-    "zod": "^3.22.4"
+    "jszip": "^3.10.2",
+    "mammoth": "^1.13.0",
+    "openai": "^7.52.0",
+    "pdf-parse": "^2.4.5",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.11",
-    "@types/node": "^20.10.6",
-    "@types/pdf-parse": "^1.1.5",
-    "tsx": "^4.7.0",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^22.20.5",
+    "tsx": "^4.23.15",
     "typescript": "^5.3.3"
   }
 }

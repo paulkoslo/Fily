@@ -4,7 +4,7 @@
   "private": true,
   "main": "dist/main/index.js",
   "scripts": {
-    "build": "tsc -b && node ../../scripts/build-preload.cjs",
+    "build": "node ../../scripts/clean-build.cjs apps/desktop && tsc -b --force && node ../../scripts/build-preload.cjs",
     "test": "node ../../scripts/run-tests.cjs --desktop",
     "dev": "npm run build && node ../../scripts/run-electron.cjs .",
     "start": "node ../../scripts/run-electron.cjs .",
@@ -16,9 +16,9 @@
     "dotenv": "^16.3.1"
   },
   "devDependencies": {
-    "@types/node": "^20.10.6",
-    "electron": "27.3.11",
-    "electron-builder": "^24.9.1",
+    "@types/node": "^22.20.5",
+    "electron": "45.2.3",
+    "electron-builder": "^26.18.0",
     "typescript": "^5.3.3"
   },
   "build": {

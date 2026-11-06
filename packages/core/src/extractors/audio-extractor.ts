@@ -4,6 +4,8 @@ import OpenAI from 'openai';
 import type { Extractor, ExtractionResult, ExtractedContent } from './types';
 import type { WorkerPool } from '../agents/worker-pool';
 import { truncateToWordLimit, withTimeout } from './extractor-utils';
+import { currentRequestSignal, withRequestDeadline } from '../agents/request-context';
+import { API_TRANSCRIPTION_TIMEOUT_MS } from '../planner/constants';
 
 /**
  * Audio/Video Extractor - transcribes speech using OpenAI Whisper API
@@ -81,15 +83,14 @@ export class AudioExtractor implements Extractor {
 
       // Transcribe using Whisper (counts as 1 worker) with timeout protection
       const transcriptionCall = async () => {
-        const transcription = await withTimeout(
-          this.openai!.audio.transcriptions.create({
+        const transcription = await withRequestDeadline(
+          () => this.openai!.audio.transcriptions.create({
             file: file,
             model: 'whisper-1',
             language: 'en', // Can be made configurable later
-          }),
-          60000, // 60 second timeout
-          10000, // 10 second warning
-          filePath
+          }, { signal: currentRequestSignal(), maxRetries: 0 }),
+          API_TRANSCRIPTION_TIMEOUT_MS,
+          'Audio transcription'
         );
         return transcription.text || '';
       };

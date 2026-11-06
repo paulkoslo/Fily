@@ -29,12 +29,15 @@ export class DatabaseManager {
     // Open database (better-sqlite3 reads/writes directly from/to disk)
     // Enable WAL mode for better concurrency and performance
     this.db = new Database(this.dbPath);
-    this.db.pragma('journal_mode = WAL');
-    
-    // Enable foreign keys
-    this.db.pragma('foreign_keys = ON');
-
-    runMigrations(this.db);
+    try {
+      this.db.pragma('journal_mode = WAL');
+      this.db.pragma('foreign_keys = ON');
+      runMigrations(this.db);
+    } catch (error) {
+      this.db.close();
+      this.db = null;
+      throw error;
+    }
   }
 
   private ensureReady(): InstanceType<typeof Database> {

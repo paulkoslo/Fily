@@ -7,6 +7,7 @@ import type { FileRecord, ExtractionProgress } from '../ipc/contracts';
 import { truncateMetadata } from './extractor-utils';
 import { PIPELINE_WORKER_POOL_MAX_WORKERS } from '../planner/constants';
 import { resolveSourcePath } from '../files';
+import { loadImageForAnalysis } from '../agents/image-input';
 
 export class ContentService {
   private extractorManager: ExtractorManager;
@@ -46,6 +47,7 @@ export class ContentService {
       metadata?: Record<string, any>;
       // Store file path for lazy image loading
       imagePath?: string;
+      loadImage?: (signal?: AbortSignal) => Promise<Buffer>;
     }> = [];
     const fileResultMap = new Map<string, { file: FileRecord; result: any; error: any }>();
 
@@ -140,6 +142,12 @@ export class ContentService {
         extractedContent: result.content,
         metadata: truncatedMetadata || metadata, // Use truncated metadata
         imagePath, // Store path for lazy loading
+        loadImage: imagePath ? async (signal) => {
+          // Recheck authorization when the queued read actually starts.
+          const source = await this.db.getSourceById(file.source_id);
+          if (!source?.enabled) throw new Error('Source is no longer enabled');
+          return loadImageForAnalysis(resolveSourcePath(source.path, file.path), signal);
+        } : undefined,
       });
 
       fileResultMap.set(file.file_id, { file, result, error: null });

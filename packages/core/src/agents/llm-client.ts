@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { currentRequestSignal } from './request-context';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { API_DEFAULT_MAX_TOKENS } from '../planner/constants';
 
@@ -11,6 +12,8 @@ export type LLMClientConfig = {
   provider: LLMProvider;
   apiKey: string;
   model?: string;
+  /** Transport injection for offline contract tests. */
+  fetch?: typeof globalThis.fetch;
   /** Optional site URL for OpenRouter attribution */
   siteUrl?: string;
   /** Optional site name for OpenRouter attribution */
@@ -78,6 +81,7 @@ export class LLMClient {
       this.client = new OpenAI({
         baseURL: 'https://openrouter.ai/api/v1',
         apiKey: config.apiKey,
+        fetch: config.fetch,
         defaultHeaders: {
           'HTTP-Referer': config.siteUrl ?? 'https://github.com/fily-app',
           'X-Title': config.siteName ?? 'Fily',
@@ -88,6 +92,7 @@ export class LLMClient {
       this.model = mapToOpenAIModel(configuredModel);
       this.client = new OpenAI({
         apiKey: config.apiKey,
+        fetch: config.fetch,
       });
     }
   }
@@ -130,6 +135,7 @@ export class LLMClient {
       model?: string;
       maxTokens?: number;
       temperature?: number;
+      signal?: AbortSignal;
     }
   ): Promise<string> {
     const modelToUse = options?.model ?? this.model;
@@ -143,23 +149,20 @@ export class LLMClient {
         messages,
         max_completion_tokens: options?.maxTokens ?? API_DEFAULT_MAX_TOKENS,
         temperature: options?.temperature,
-      });
+      }, { signal: options?.signal ?? currentRequestSignal(), maxRetries: 0 });
 
-      // CRITICAL: Log full response structure for debugging
+      // Log response shape without exposing document text.
       console.log(`[LLMClient] Response received - Type: ${typeof response}, Has choices: ${!!response.choices}, Choices type: ${Array.isArray(response.choices) ? 'array' : typeof response.choices}`);
       
       if (!response.choices) {
-        console.error(`[LLMClient] ❌ Response has no choices property! Full response:`, JSON.stringify(response, null, 2));
         throw new Error(`API response missing 'choices' property. Response structure: ${JSON.stringify(Object.keys(response || {}))}`);
       }
       
       if (!Array.isArray(response.choices)) {
-        console.error(`[LLMClient] ❌ Response.choices is not an array! Type: ${typeof response.choices}, Value:`, response.choices);
         throw new Error(`API response 'choices' is not an array. Type: ${typeof response.choices}`);
       }
       
       if (response.choices.length === 0) {
-        console.error(`[LLMClient] ❌ Response.choices array is empty! Full response:`, JSON.stringify(response, null, 2));
         throw new Error('API response has empty choices array');
       }
 
@@ -171,12 +174,12 @@ export class LLMClient {
           `Finish reason: ${response.choices[0]?.finish_reason}, ` +
           `Model: ${modelToUse}, Provider: ${provider}`
         );
-        console.warn(`[LLMClient] Full first choice:`, JSON.stringify(response.choices[0], null, 2));
       }
       
       return content;
     } catch (error) {
-      console.error(`[LLMClient] Error in chatCompletion:`, error);
+      const status = error instanceof OpenAI.APIError ? error.status : undefined;
+      console.error(`[LLMClient] Request failed: provider=${provider}, model=${modelToUse}, status=${status ?? 'unavailable'}`);
       throw error;
     }
   }

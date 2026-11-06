@@ -135,18 +135,17 @@ export async function withTimeout<T>(
   }, warningMs);
 
   // Set up timeout promise
+  let timeoutTimer: ReturnType<typeof setTimeout>;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => {
+    timeoutTimer = setTimeout(() => {
       reject(new Error(`Extraction timeout after ${timeoutMs}ms: ${filePath}`));
     }, timeoutMs);
   });
 
   try {
-    const result = await Promise.race([promise, timeoutPromise]);
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
     clearTimeout(warningTimer);
-    return result;
-  } catch (error) {
-    clearTimeout(warningTimer);
-    throw error;
+    clearTimeout(timeoutTimer!);
   }
 }

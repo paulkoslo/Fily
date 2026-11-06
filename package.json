@@ -32,12 +32,15 @@
     "ci:check": "npm run build && npm run test -w packages/core && npm run test -w apps/desktop"
   },
   "engines": {
-    "node": "22.x",
+    "node": ">=22.12.0 <23",
     "npm": ">=10"
   },
   "devDependencies": {
-    "@electron/rebuild": "^3.7.2",
+    "@electron/rebuild": "^4.2.1",
     "esbuild": "^0.28.2",
     "typescript": "^5.3.3"
+  },
+  "overrides": {
+    "tsx": "^4.23.15"
   }
 }

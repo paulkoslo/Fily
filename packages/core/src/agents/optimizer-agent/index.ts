@@ -181,7 +181,7 @@ export class OptimizerAgent {
       const result = await executeApiCall<string | { optimizations: OptimizerResult[]; newFolders?: OptimizerNewFolder[] }>(
         messages,
         fallback,
-        this.workerPool,
+        null, // Already inside the batch worker; re-queuing can deadlock a full pool.
         this.llmClient
       );
 

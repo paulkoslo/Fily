@@ -1,6 +1,7 @@
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import type { WorkerPool } from './worker-pool';
 import type { LLMClient } from './llm-client';
+import { currentRequestSignal, withRequestDeadline } from './request-context';
 import { API_DEFAULT_MAX_TOKENS, API_DEFAULT_TIMEOUT_MS } from '../planner/constants';
 
 /**
@@ -19,8 +20,11 @@ export async function executeApiCall<T>(
     maxTokens?: number;
     reason?: string; // Reason for the API call (for logging)
     timeoutMs?: number; // Timeout in milliseconds (default: 3 minutes)
+    signal?: AbortSignal;
   }
 ): Promise<T> {
+  options?.signal?.throwIfAborted();
+  currentRequestSignal()?.throwIfAborted();
   if (!llmClient) {
     return fallback();
   }
@@ -35,21 +39,11 @@ export async function executeApiCall<T>(
     const startTime = Date.now();
     
     try {
-      // Create timeout promise
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => {
-          reject(new Error(`API call timeout after ${timeoutMs}ms: ${reason}`));
-        }, timeoutMs);
-      });
-
-      // Race between API call and timeout
-      const content = await Promise.race([
-        llmClient.chatCompletion(messages, {
-          model: options?.model,
-          maxTokens: options?.maxTokens ?? API_DEFAULT_MAX_TOKENS,
-        }),
-        timeoutPromise,
-      ]) as string;
+      const content = await withRequestDeadline(() => llmClient.chatCompletion(messages, {
+        model: options?.model,
+        maxTokens: options?.maxTokens ?? API_DEFAULT_MAX_TOKENS,
+        signal: currentRequestSignal(),
+      }), timeoutMs, `API call: ${reason}`, options?.signal);
 
       const duration = Date.now() - startTime;
       console.log(`[API Call] Completed in ${duration}ms: ${reason}`);
@@ -57,6 +51,9 @@ export async function executeApiCall<T>(
       return content as unknown as T;
     } catch (error: any) {
       const duration = Date.now() - startTime;
+      // Cancellation must not be converted into an apparently successful fallback.
+      const parent = [options?.signal, currentRequestSignal()].find((signal) => signal?.aborted);
+      if (parent?.aborted) throw parent.reason;
       
       // Check if it's a timeout error
       if (error?.message?.includes('timeout')) {
@@ -133,7 +130,7 @@ export async function executeApiCall<T>(
   };
 
   if (workerPool) {
-    return workerPool.execute(performRequest);
+    return workerPool.execute(performRequest, { signal: options?.signal });
   }
 
   return performRequest();

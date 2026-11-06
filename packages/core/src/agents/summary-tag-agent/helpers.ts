@@ -41,7 +41,11 @@ export function groupFilesByProcessingType(files: FileProcessingInput[]): {
   const invalidImages: FileProcessingInput[] = [];
 
   for (const file of files) {
-    if (file.contentType === 'image' && file.imageBuffer) {
+    if (file.contentType === 'image' && (file.imageBuffer || file.loadImage)) {
+      if (!file.imageBuffer && file.loadImage) {
+        vision.push(file);
+        continue;
+      }
       // Validate image before adding to batch
       if (isValidImage(file)) {
         vision.push(file);
@@ -74,8 +78,8 @@ export function isValidImage(file: FileProcessingInput): boolean {
   }
 
   // Check base64 size (very large images might cause issues)
-  const base64Image = file.imageBuffer.toString('base64');
-  if (base64Image.length > BASE64_IMAGE_MAX_SIZE_BYTES) {
+  const encodedSize = 4 * Math.ceil(file.imageBuffer.length / 3);
+  if (encodedSize > BASE64_IMAGE_MAX_SIZE_BYTES) {
     return false;
   }
 
