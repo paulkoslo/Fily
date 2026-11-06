@@ -1,59 +1,7 @@
 import * as fs from 'fs';
-import pdf from 'pdf-parse';
+import { PDFParse } from 'pdf-parse';
 import type { Extractor, ExtractionResult, ExtractedContent } from './types';
 import { truncateToWordLimit, withTimeout } from './extractor-utils';
-
-// Global suppression of pdf-parse font warnings (set up once at module load)
-let fontWarningSuppressionActive = false;
-
-function setupFontWarningSuppression() {
-  if (fontWarningSuppressionActive) return;
-  fontWarningSuppressionActive = true;
-  
-  const originalStderrWrite = process.stderr.write.bind(process.stderr);
-  const originalStdoutWrite = process.stdout.write.bind(process.stdout);
-  
-  const filterFontWarnings = (msg: string): boolean => {
-    const lowerMsg = msg.toLowerCase();
-    return !(
-      lowerMsg.includes('tt: undefined function') ||
-      lowerMsg.includes('warning: tt:') ||
-      lowerMsg.includes('could not find a preferred cmap table') ||
-      lowerMsg.includes('required "glyf" table is not found') ||
-      (lowerMsg.includes('glyf') && lowerMsg.includes('table')) ||
-      (lowerMsg.includes('cmap') && lowerMsg.includes('table'))
-    );
-  };
-  
-  process.stderr.write = function(chunk: any, encoding?: any, callback?: any): boolean {
-    if (chunk) {
-      const msg = chunk.toString();
-      if (filterFontWarnings(msg)) {
-        return originalStderrWrite(chunk, encoding, callback);
-      }
-      // Swallow font warnings
-      if (typeof callback === 'function') callback();
-      return true;
-    }
-    return originalStderrWrite(chunk, encoding, callback);
-  };
-  
-  process.stdout.write = function(chunk: any, encoding?: any, callback?: any): boolean {
-    if (chunk) {
-      const msg = chunk.toString();
-      if (filterFontWarnings(msg)) {
-        return originalStdoutWrite(chunk, encoding, callback);
-      }
-      // Swallow font warnings
-      if (typeof callback === 'function') callback();
-      return true;
-    }
-    return originalStdoutWrite(chunk, encoding, callback);
-  };
-}
-
-// Set up suppression immediately when module loads
-setupFontWarningSuppression();
 
 /**
  * PDF Extractor - extracts text from PDF files
@@ -61,7 +9,7 @@ setupFontWarningSuppression();
  */
 export class PDFExtractor implements Extractor {
   readonly id = 'pdf-extractor';
-  readonly version = '1.0.0';
+  readonly version = '2.0.0';
   
   readonly supportedExtensions = ['pdf'];
 
@@ -70,6 +18,7 @@ export class PDFExtractor implements Extractor {
   }
 
   async extract(filePath: string, extension: string): Promise<ExtractionResult> {
+    let parser: PDFParse | undefined;
     try {
       // Check file size (skip files larger than 50MB)
       const stats = fs.statSync(filePath);
@@ -90,15 +39,23 @@ export class PDFExtractor implements Extractor {
         filePath
       );
       
-      // Font warning suppression is already set up at module load time
-      // Just parse the PDF - warnings will be automatically filtered
+      parser = new PDFParse({ data: dataBuffer, verbosity: 0, isEvalSupported: false });
       const pdfData = await withTimeout(
-        pdf(dataBuffer),
-        60000, // 60 second timeout
-        10000, // 10 second warning
+        (async () => {
+          const text = await parser!.getText();
+          const info = await parser!.getInfo();
+          return {
+            // Avoid generated page-number separators masquerading as scan text.
+            text: text.pages.map((page) => page.text).join('\n\n'),
+            numpages: info.total,
+            info: info.info,
+          };
+        })(),
+        60000,
+        10000,
         filePath
       );
-      
+
       const rawText = pdfData.text || '';
       
       // Truncate to 1000 words max for scalability
@@ -110,7 +67,7 @@ export class PDFExtractor implements Extractor {
       let extractedContent: ExtractedContent;
 
       if (!hasText) {
-        // Image-based / scanned PDF: store original binary as "image" payload for the Summary Agent to OCR
+        // Image-based PDF: record OCR coverage honestly; a later OCR job reads the source file.
         extractedContent = {
           contentType: 'pdf',
           extractedText: '', // No text available from pdf-parse
@@ -127,8 +84,7 @@ export class PDFExtractor implements Extractor {
             modDate: pdfData.info?.ModDate || null,
             // Flags and payload for downstream agents
             isImageBased: true,
-            // Store original PDF bytes so the Summary Agent can attempt vision/OCR as a fallback
-            pdfBuffer: dataBuffer.toString('base64'),
+            needsOcr: true,
             mimeType: 'application/pdf',
           },
         };
@@ -173,6 +129,9 @@ export class PDFExtractor implements Extractor {
         error: error instanceof Error ? error.message : 'Unknown error',
         extractorVersion: this.version,
       };
+    } finally {
+      // Release parser workers/resources even for malformed or timed-out input.
+      if (parser) await parser.destroy().catch(() => {});
     }
   }
 
