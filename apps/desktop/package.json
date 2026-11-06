@@ -5,11 +5,10 @@
   "main": "dist/main/index.js",
   "scripts": {
     "build": "tsc -b",
-    "dev": "npm run build && unset ELECTRON_RUN_AS_NODE && electron .",
-    "start": "unset ELECTRON_RUN_AS_NODE && electron .",
+    "dev": "npm run build && node ../../scripts/run-electron.cjs .",
+    "start": "node ../../scripts/run-electron.cjs .",
     "package": "electron-builder",
-    "clean": "rm -rf dist out",
-    "postinstall": "electron-rebuild -f -w better-sqlite3 --version=27.3.0"
+    "clean": "rm -rf dist out"
   },
   "dependencies": {
     "@virtual-finder/core": "file:../../packages/core",
@@ -17,9 +16,8 @@
   },
   "devDependencies": {
     "@types/node": "^20.10.6",
-    "electron": "^27.3.0",
+    "electron": "27.3.11",
     "electron-builder": "^24.9.1",
-    "electron-rebuild": "^3.2.9",
     "typescript": "^5.3.3"
   },
   "build": {

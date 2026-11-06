@@ -5,7 +5,6 @@ const {
   withTempDb,
   createSource,
   insertIndexedFile,
-  canUseDatabaseIntegration,
 } = require('./test-helpers');
 
 /**
@@ -17,15 +16,9 @@ const {
  * - we can validate real behavior without any AI API call.
  */
 
-// If native sqlite module cannot load (local Node ABI mismatch), skip these tests.
-// In CI (clean install), these should run normally.
-const integrationSkipReason = canUseDatabaseIntegration()
-  ? false
-  : 'Skipping DB integration tests: better-sqlite3 native module is unavailable for current Node runtime.';
 
 test(
   'smart search ranks filename matches above summary and tags',
-  { skip: integrationSkipReason },
   async () => {
     await withTempDb(async (db) => {
       const source = await createSource(db, 'rank-source');
@@ -79,7 +72,6 @@ test(
 
 test(
   'smart search respects source filtering',
-  { skip: integrationSkipReason },
   async () => {
     await withTempDb(async (db) => {
       const sourceA = await createSource(db, 'source-a');
@@ -119,7 +111,6 @@ test(
 
 test(
   'smart search trims and lowercases query, and handles regex-like input safely',
-  { skip: integrationSkipReason },
   async () => {
     await withTempDb(async (db) => {
       const source = await createSource(db, 'special-query');
@@ -144,7 +135,6 @@ test(
 
 test(
   'smart search excludes files marked as missing and respects limit',
-  { skip: integrationSkipReason },
   async () => {
     await withTempDb(async (db) => {
       const source = await createSource(db, 'missing-and-limit');
@@ -189,7 +179,6 @@ test(
 
 test(
   'smart search returns empty array for blank query',
-  { skip: integrationSkipReason },
   async () => {
     await withTempDb(async (db) => {
       const source = await createSource(db, 'blank-query');

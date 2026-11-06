@@ -20,7 +20,7 @@ Fily solves the problem of disorganized files scattered across your system. Inst
 - **Real-Time Indexing**: Watch mode automatically detects and indexes new files as they appear
 - **Fast Search**: Search across all indexed files by name, content, tags, or metadata
 - **Native Integration**: Opens files with your default macOS applications
-- **Local-First**: All data stored locally in SQLite—your files and metadata never leave your machine
+- **Local index**: Files stay in place and the index is stored in SQLite. Cloud AI analysis sends selected content and metadata to the configured providers.
 - **Cost-Efficient**: Process thousands of files for just a few dollars in API costs
 
 ## Recent Structural & Efficiency Updates (February 2026)
@@ -38,9 +38,10 @@ Fily solves the problem of disorganized files scattered across your system. Inst
 
 ### Prerequisites
 
-- Node.js 18 or higher
-- npm 9 or higher
+- Node.js 22 (`.nvmrc`; use `nvm install && nvm use` if you use nvm)
+- npm 10 or higher
 - macOS (other platforms not tested)
+- Xcode Command Line Tools (`xcode-select --install`) and Python 3 if a native module must compile locally
 - LLM API key (one of the following):
   - **OpenRouter API key** (recommended) - Access multiple models: https://openrouter.ai/keys
   - **OpenAI API key** - Direct OpenAI access: https://platform.openai.com/api-keys
@@ -52,14 +53,16 @@ Fily solves the problem of disorganized files scattered across your system. Inst
 git clone https://github.com/paulkoslo/Fily.git
 cd Fily
 
-# Install dependencies
-npm install
+# Select the development Node version (if using nvm)
+nvm install
+nvm use
 
-# Install desktop app dependencies
-cd apps/desktop && npm install && cd ../..
+# Install every workspace, including Electron, from the single lockfile.
+# The postinstall step prepares SQLite for the installed Electron version.
+npm ci
 
-# Rebuild native modules for Electron (required!)
-npm run rebuild
+# Verify the app's SQLite binding without opening the app or your library
+npm run doctor
 
 # Start the application (builds automatically)
 npm run dev
@@ -75,7 +78,17 @@ Start the application:
 npm run dev
 ```
 
-The application will launch and you can begin indexing and organizing your files. Configure your API key in Settings before using AI features.
+The development command builds core and desktop, waits for the UI server, then
+launches Electron. Closing the app or interrupting the command also stops the UI
+server. Configure your API key in Settings before using AI features.
+
+After changing native dependencies, run `npm run rebuild` and `npm run doctor`.
+Tests deliberately use Electron's headless Node runtime, sharing the same SQLite
+binding as the app. Do not rebuild SQLite for your host Node separately. A native
+binding failure fails the tests and must be fixed; database tests are never skipped.
+
+The current target is a small alpha run from Git. See
+[the alpha plan](docs/ALPHA-PLAN.md) for the audit, remaining limitations, and milestones.
 
 ### Packaging for Distribution
 
@@ -89,13 +102,16 @@ This creates a `.app` bundle in `apps/desktop/out/`.
 
 ## Testing and CI
 
-This repo uses a simple CI pipeline in `.github/workflows/ci.yml`.
+CI runs on Linux and macOS in `.github/workflows/ci.yml`.
 
 On every push and pull request, CI runs:
 
-1. `npm ci` (clean install)
-2. `npm run build:ui` (TypeScript + Vite build for UI)
-3. `npm run test` (builds core TypeScript, then runs core unit tests)
+1. `npm ci` (all workspaces and the native Electron binding)
+2. `npm run doctor` (SQLite verification in Electron's runtime)
+3. `npm run ci:check` (core, UI and desktop builds, followed by all core tests,
+   including mandatory SQLite integration tests)
+4. On macOS, `npm run smoke:desktop` loads the built UI, preload, database and IPC
+   using a temporary profile and synthetic document, without reading normal user data
 
 ### Local CI command
 
@@ -105,10 +121,13 @@ Run exactly what CI runs:
 npm run ci:check
 ```
 
+After building, run `npm run smoke:desktop` on macOS for the isolated desktop smoke test.
+
 ### Notes on AI testing
 
 - CI tests do **not** call OpenAI/OpenRouter.
-- Current tests focus on deterministic logic (schema validation, rule matching, tree building, extraction utilities).
+- Tests cover deterministic logic, watcher revision replacement, overlapping sources,
+  transactional rollback, large scan cleanup, and tree loading across 10,000 files.
 - Real AI smoke tests can be added later as a separate nightly/manual workflow.
 
 ## Configuration
@@ -188,7 +207,7 @@ Fily/
 │   │   │   ├── main/     # Main process (window + IPC registration)
 │   │   │   │   └── ipc/  # Modular IPC handlers (content/planner/virtual-tree)
 │   │   │   └── preload/  # Secure bridge to renderer
-│   │   └── package.json  # Separate from workspace (has electron)
+│   │   └── package.json  # Desktop workspace (has Electron)
 │   │
 │   └── ui/               # React + Vite renderer
 │       └── src/
@@ -271,9 +290,13 @@ Files are organized into a virtual hierarchy that makes sense based on their con
 ## Security & Privacy
 
 - **Local-First**: All data stored locally in SQLite database
-- **No Cloud Sync**: Your files and metadata never leave your machine
+- **Cloud analysis**: AI features send document excerpts, filenames/path context,
+  images, and optional audio to the configured providers. Local storage does not
+  mean offline AI processing. Choose source folders accordingly; finer-grained
+  disclosure and exclusion controls are part of the alpha plan.
 - **Secure IPC**: All inter-process communication validated with Zod schemas
-- **Sandboxed Renderer**: UI has no direct file system access
+- **Isolated Renderer**: Node integration is disabled and context isolation is on.
+  Renderer process sandboxing and stricter IPC authorization remain alpha-plan work.
 - **Non-Destructive**: Files are never modified, moved, or deleted
 
 ## Performance

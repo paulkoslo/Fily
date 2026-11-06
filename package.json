@@ -7,29 +7,35 @@
   "license": "MIT",
   "workspaces": [
     "packages/*",
-    "apps/ui"
+    "apps/*"
   ],
   "scripts": {
     "sync-icons": "mkdir -p apps/ui/public/icons && cp apps/desktop/assets/icons/In-app-icons/* apps/ui/public/icons/",
-    "dev": "npm run dev:ui & npm run dev:desktop",
+    "dev": "npm run build:core && npm run build:desktop && node scripts/dev.cjs",
     "dev:ui": "npm run dev -w apps/ui",
-    "dev:desktop": "cd apps/desktop && npm run dev",
+    "dev:desktop": "npm run build:core && npm run dev -w apps/desktop",
     "build": "npm run build -w packages/core && npm run build -w apps/ui && cd apps/desktop && npm run build",
     "build:core": "npm run build -w packages/core",
     "build:ui": "npm run build -w apps/ui",
     "build:desktop": "cd apps/desktop && npm run build",
     "package": "npm run build && cd apps/desktop && npm run package",
     "start": "cd apps/desktop && npm run start",
-    "rebuild": "npx electron-rebuild -f -w better-sqlite3 --version=27.3.0",
+    "postinstall": "npm run rebuild && npm run doctor",
+    "rebuild": "node scripts/rebuild-native.cjs",
+    "doctor": "node scripts/run-electron.cjs --node scripts/check-native.cjs",
+    "smoke:desktop": "node scripts/run-electron.cjs scripts/smoke-desktop.cjs",
     "clean": "rm -rf node_modules packages/*/dist apps/*/dist apps/*/node_modules packages/*/node_modules",
     "benchmark": "npm run benchmark -w packages/core",
     "test": "npm run build:core && npm run test -w packages/core",
     "test:watch": "npm run test:watch -w packages/core",
-    "ci:check": "npm run build:ui && npm run test"
+    "ci:check": "npm run build && npm run test -w packages/core"
+  },
+  "engines": {
+    "node": "22.x",
+    "npm": ">=10"
   },
   "devDependencies": {
     "@electron/rebuild": "^3.7.2",
-    "electron-rebuild": "^3.2.9",
     "typescript": "^5.3.3"
   }
 }

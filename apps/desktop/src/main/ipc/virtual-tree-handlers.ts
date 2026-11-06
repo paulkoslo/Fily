@@ -3,7 +3,7 @@ import {
   IPC_CHANNELS,
   GetVirtualTreeRequestSchema,
   GetVirtualChildrenRequestSchema,
-  VirtualTreeBuilder,
+  loadVirtualTree,
   type DatabaseManager,
   type FileRecord,
   type VirtualNode,
@@ -30,78 +30,7 @@ export function registerVirtualTreeHandlers(
 
         const { sourceId } = parsed.data;
 
-        const totalStartTime = Date.now();
-        console.log(`[Performance] Starting virtual tree load for source ${sourceId || 'all'}...`);
-
-        // Check total count first to decide if we need optimized queries
-        const countStartTime = Date.now();
-        const totalCount = await db.getVirtualPlacementCount(sourceId);
-        const countTime = Date.now() - countStartTime;
-        console.log(
-          `[Performance] Total virtual placements count: ${totalCount.toLocaleString()} (queried in ${countTime}ms)`
-        );
-
-        if (totalCount === 0) {
-          return {
-            success: true,
-            tree: {
-              id: 'root',
-              name: 'Virtual Files',
-              path: '/',
-              type: 'folder',
-              children: [],
-            },
-          };
-        }
-
-        // Build tree - use top-level only for fast initial load (large datasets)
-        // Full tree is built lazily when folders are expanded
-        const buildStartTime = Date.now();
-        const builder = new VirtualTreeBuilder();
-
-        let tree: VirtualNode;
-        if (totalCount > 10000) {
-          // Large dataset: use optimized queries (only top-level placements)
-          const placementsStartTime = Date.now();
-          const topLevelPlacements = await db.getTopLevelVirtualPlacements(sourceId);
-          const placementsTime = Date.now() - placementsStartTime;
-          console.log(
-            `[Performance] Loaded ${topLevelPlacements.length.toLocaleString()} top-level placements in ${placementsTime}ms (optimized query)`
-          );
-
-          tree = builder.buildTopLevelOnly(topLevelPlacements, totalCount);
-          const buildTime = Date.now() - buildStartTime;
-          const totalTime = Date.now() - totalStartTime;
-          console.log(`[Performance] Built top-level tree structure in ${buildTime}ms (lazy loading enabled)`);
-          console.log(
-            `[Performance] Total virtual tree load time: ${totalTime}ms (skipped loading ${(totalCount - topLevelPlacements.length).toLocaleString()} deep placements)`
-          );
-        } else {
-          // Small dataset: load all placements and build full tree immediately
-          const placementsStartTime = Date.now();
-          const placements = await db.getVirtualPlacements(sourceId);
-          const placementsTime = Date.now() - placementsStartTime;
-          console.log(`[Performance] Loaded ${placements.length.toLocaleString()} virtual placements in ${placementsTime}ms`);
-
-          const fileRecordsMap = new Map<string, FileRecord>();
-          if (placements.length > 0) {
-            const fileLoadStartTime = Date.now();
-            const fileRecords = await db.getFileRecordsForVirtualPlacements(sourceId);
-            for (const record of fileRecords) {
-              fileRecordsMap.set(record.file_id, record);
-            }
-            const fileLoadTime = Date.now() - fileLoadStartTime;
-            console.log(
-              `[Performance] Loaded ${fileRecordsMap.size.toLocaleString()} file records via DB helper in ${fileLoadTime}ms`
-            );
-          }
-
-          tree = builder.buildFromPlacements(placements, fileRecordsMap);
-          const buildTime = Date.now() - buildStartTime;
-          const totalTime = Date.now() - totalStartTime;
-          console.log(`[Performance] Built full virtual tree in ${buildTime}ms`);
-          console.log(`[Performance] Total virtual tree load time: ${totalTime}ms`);
-        }
+        const tree = await loadVirtualTree(db, sourceId);
 
         return {
           success: true,

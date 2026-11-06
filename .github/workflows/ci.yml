@@ -17,8 +17,11 @@ concurrency:
 
 jobs:
   build-and-test:
-    # Use a clean Linux runner to simulate a fresh machine.
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
 
     steps:
@@ -26,17 +29,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Install Node and enable npm dependency cache for faster runs.
+      # Match the documented development runtime and single workspace lockfile.
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: npm
 
       # Install exact dependency versions from package-lock.json.
       - name: Install dependencies
         run: npm ci
 
-      # Run the single command that builds + tests this repo.
+      - name: Verify native SQLite in the app runtime
+        run: npm run doctor
+
+      # Includes UI, core, desktop and mandatory SQLite regression tests.
       - name: Run CI checks
         run: npm run ci:check
+
+      - name: Smoke test built renderer, preload and IPC in an isolated profile
+        if: runner.os == 'macOS'
+        run: npm run smoke:desktop

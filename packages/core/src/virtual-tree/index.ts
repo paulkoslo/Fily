@@ -1,5 +1,7 @@
 import type { FileRecord, PlannerOutput, VirtualPlacement } from '../ipc/contracts';
 
+export type VirtualFolderSummary = { path: string; fileCount: number };
+
 /**
  * Represents a node in the virtual folder tree.
  */
@@ -94,6 +96,20 @@ export class VirtualTreeBuilder {
    * @returns Root VirtualNode with only folder structure (no file children)
    */
   buildTopLevelOnly(placements: VirtualPlacement[], totalCount: number): VirtualNode {
+    const counts = new Map<string, number>();
+    for (const placement of placements) {
+      const parts = placement.virtual_path.split('/').filter(Boolean);
+      if (parts.length < 2) continue;
+      const folderPath = `/${parts[0]}`;
+      counts.set(folderPath, (counts.get(folderPath) ?? 0) + 1);
+    }
+    return this.buildTopLevelFromFolders(
+      Array.from(counts, ([path, fileCount]) => ({ path, fileCount })), totalCount
+    );
+  }
+
+  /** Build lazy folder nodes from database aggregates rather than file rows. */
+  buildTopLevelFromFolders(folders: VirtualFolderSummary[], totalCount: number): VirtualNode {
     const root: VirtualNode = {
       id: 'root',
       name: 'Virtual Files',
@@ -102,44 +118,14 @@ export class VirtualTreeBuilder {
       children: [],
     };
 
-    // Track unique top-level folder paths
-    const topLevelFolders = new Map<string, VirtualNode>();
-    
-    // Track file counts per folder path
-    const folderFileCounts = new Map<string, number>();
-
-    for (const placement of placements) {
-      const pathParts = placement.virtual_path
-        .split('/')
-        .filter((p) => p.length > 0);
-
-      if (pathParts.length === 0) continue;
-
-      // Get top-level folder name (first part of path)
-      const topLevelFolderName = pathParts[0];
-      const topLevelPath = `/${topLevelFolderName}`;
-
-      // Count files in this folder
-      folderFileCounts.set(topLevelPath, (folderFileCounts.get(topLevelPath) || 0) + 1);
-
-      // Create top-level folder if it doesn't exist
-      if (!topLevelFolders.has(topLevelPath)) {
-        const folder: VirtualNode = {
-          id: `folder:${topLevelPath}`,
-          name: topLevelFolderName,
-          path: topLevelPath,
-          type: 'folder',
-          children: [], // Empty - will be loaded lazily
-        };
-        topLevelFolders.set(topLevelPath, folder);
-        root.children.push(folder);
-      }
-    }
-
-    // Set file counts for top-level folders
-    for (const folder of root.children) {
-      folder.fileCount = folderFileCounts.get(folder.path) || 0;
-    }
+    root.children = folders.map((folder) => ({
+      id: `folder:${folder.path}`,
+      name: folder.path.slice(1),
+      path: folder.path,
+      type: 'folder',
+      children: [],
+      fileCount: folder.fileCount,
+    }));
 
     // Sort top-level folders
     root.children.sort((a, b) => {
@@ -338,3 +324,5 @@ export class VirtualTreeBuilder {
     return currentNode;
   }
 }
+
+export { loadVirtualTree } from './service';

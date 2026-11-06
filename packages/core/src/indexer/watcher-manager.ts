@@ -150,7 +150,7 @@ export class WatcherManager {
         ? null 
         : path.dirname(relativePath);
       const name = path.basename(filePath);
-      const extension = path.extname(name).slice(1); // Remove leading dot
+      const extension = path.extname(name).slice(1).toLowerCase(); // Match the crawler
 
       // Compute file ID
       const fileId = computeFileId(filePath, stats.size, stats.mtimeMs);

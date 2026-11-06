@@ -53,6 +53,7 @@ export const WORKER_POOL_DEFAULT_MAX_WORKERS = 80; // Default concurrent workers
 export const WORKER_POOL_MAX_ITERATIONS = 10000; // Safety limit for queue waiting
 export const WORKER_POOL_CHECK_INTERVAL_MS = 50; // How often to check queue
 export const PIPELINE_WORKER_POOL_MAX_WORKERS = 50; // Default for extraction/planner execution pipelines
+export const VIRTUAL_TREE_FULL_BUILD_MAX_FILES = 10000;
 
 // ============================================================================
 // FILE SIZE LIMITS
