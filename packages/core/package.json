@@ -4,6 +4,11 @@
   "private": true,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./ipc": { "types": "./dist/ipc/contracts.d.ts", "default": "./dist/ipc/contracts.js" }
+  },
+  "typesVersions": { "*": { "ipc": ["dist/ipc/contracts.d.ts"] } },
   "files": [
     "dist"
   ],

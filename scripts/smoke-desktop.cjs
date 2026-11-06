@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const { app, BrowserWindow, ipcMain } = require('electron');
 
 // Never load project .env files, user credentials or the normal Fily database.
@@ -13,6 +14,7 @@ app.setPath('userData', profile);
 app.disableHardwareAcceleration();
 let db;
 let window;
+let outsider;
 let finished = false;
 
 async function finish(error) {
@@ -20,6 +22,7 @@ async function finish(error) {
   finished = true;
   clearTimeout(deadline);
   window?.destroy();
+  outsider?.destroy();
   await db?.close();
   fs.rmSync(profile, { recursive: true, force: true });
   if (error) console.error(error);
@@ -31,6 +34,7 @@ app.whenReady().then(async () => {
   const { DatabaseManager, Crawler, WatcherManager } = require('@virtual-finder/core');
   const { ApiKeyStore } = require('../apps/desktop/dist/main/api-key-store');
   const { registerIpcHandlers } = require('../apps/desktop/dist/main/ipc-handlers');
+  const { secureWindow } = require('../apps/desktop/dist/main/security');
   db = new DatabaseManager(path.join(profile, 'smoke.db'));
   const library = path.join(profile, 'library');
   fs.mkdirSync(library);
@@ -46,14 +50,17 @@ app.whenReady().then(async () => {
       preload: path.resolve(__dirname, '../apps/desktop/dist/preload/index.js'),
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: false, // Match the current app; sandbox hardening is the next milestone.
+      sandbox: true,
     },
   });
   window.webContents.on('preload-error', (_event, _file, error) => finish(error));
   window.webContents.on('render-process-gone', (_event, details) => finish(new Error(details.reason)));
+  const rendererUrl = process.argv.includes('--dev') ? 'http://localhost:5180/'
+    : pathToFileURL(path.resolve(__dirname, '../apps/ui/dist/index.html')).href;
+  secureWindow(window, rendererUrl);
   registerIpcHandlers(ipcMain, db, () => window, new WatcherManager(db),
-    new ApiKeyStore({ userDataPath: profile }));
-  await window.loadFile(path.resolve(__dirname, '../apps/ui/dist/index.html'));
+    new ApiKeyStore({ userDataPath: profile }), rendererUrl);
+  await window.loadURL(rendererUrl);
 
   const result = await window.webContents.executeJavaScript(`(async () => {
     const sources = await window.api.getSources();
@@ -68,6 +75,32 @@ app.whenReady().then(async () => {
   assert.equal(result.files.files.length, 1);
   assert.equal(result.files.files[0].name, 'note.txt');
   assert.equal(result.keys.hasKey, false);
-  console.log('Desktop smoke passed: built UI, preload, SQLite and IPC using a temporary profile.');
+  assert.equal(window.webContents.getLastWebPreferences().sandbox, true);
+  const blocked = await window.webContents.executeJavaScript(`(async () => {
+    const forgedSource = await window.api.addSource({ name: 'Forged', path: ${JSON.stringify(profile)} });
+    const traversal = await window.api.openFolder({ sourceId: ${source.id}, relativePath: '..' });
+    const missingFile = await window.api.openFile({ fileId: 'unknown-file' });
+    const script = document.createElement('script');
+    script.textContent = 'window.__inlineExecuted = true';
+    document.body.appendChild(script);
+    return { forgedSource, traversal, missingFile, inlineExecuted: !!window.__inlineExecuted,
+      popupBlocked: window.open('https://example.com') === null, nodeExposed: typeof window.require !== 'undefined' };
+  })()`);
+  assert.equal(blocked.forgedSource.success, false);
+  assert.equal(blocked.traversal.success, false);
+  assert.equal(blocked.missingFile.success, false);
+  assert.equal(blocked.inlineExecuted, false);
+  assert.equal(blocked.popupBlocked, true);
+  assert.equal(blocked.nodeExposed, false);
+  outsider = new BrowserWindow({ show: false, webPreferences: {
+    preload: path.resolve(__dirname, '../apps/desktop/dist/preload/index.js'),
+    sandbox: true, contextIsolation: true, nodeIntegration: false,
+  } });
+  secureWindow(outsider, rendererUrl);
+  await outsider.loadURL(rendererUrl);
+  const rejected = await outsider.webContents.executeJavaScript(`window.api.getApiKeyStatus()
+    .then(result => result.success === false, () => true)`);
+  assert.equal(rejected, true, 'Another window must not access the main window IPC');
+  console.log(`Desktop smoke passed (${process.argv.includes('--dev') ? 'development' : 'built'}): sandboxed UI, preload, SQLite, trusted IPC, source boundaries and CSP.`);
   await finish();
 }).catch(finish);

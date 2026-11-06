@@ -3,14 +3,17 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const root = path.resolve(__dirname, '..');
-const testDir = path.join(root, 'packages/core/tests');
+const args = process.argv.slice(2);
+const desktop = args[0] === '--desktop';
+if (desktop) args.shift();
+const testDir = path.join(root, desktop ? 'apps/desktop/tests' : 'packages/core/tests');
 const files = fs.readdirSync(testDir).filter((name) => name.endsWith('.test.js')).sort();
 if (files.length === 0) throw new Error('No core tests found');
 
 // Use the same native ABI as the app, including in CI. No per-runtime rebuilds
 // or optional integration tests: a broken SQLite binding must fail the suite.
 const child = spawn(require('electron'), [
-  '--test', ...process.argv.slice(2), ...files.map((name) => path.join(testDir, name)),
+  '--test', ...args, ...files.map((name) => path.join(testDir, name)),
 ], {
   cwd: root,
   stdio: 'inherit',

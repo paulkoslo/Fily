@@ -4,7 +4,8 @@
   "private": true,
   "main": "dist/main/index.js",
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && node ../../scripts/build-preload.cjs",
+    "test": "node ../../scripts/run-tests.cjs --desktop",
     "dev": "npm run build && node ../../scripts/run-electron.cjs .",
     "start": "node ../../scripts/run-electron.cjs .",
     "package": "electron-builder",

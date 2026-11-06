@@ -6,6 +6,7 @@ import { WorkerPool } from '../agents/worker-pool';
 import type { FileRecord, ExtractionProgress } from '../ipc/contracts';
 import { truncateMetadata } from './extractor-utils';
 import { PIPELINE_WORKER_POOL_MAX_WORKERS } from '../planner/constants';
+import { resolveSourcePath } from '../files';
 
 export class ContentService {
   private extractorManager: ExtractorManager;
@@ -55,8 +56,12 @@ export class ContentService {
       // Extract content (one at a time)
       let result: any;
       let extractError: any = null;
+      let authorizedPath = file.path;
       try {
-        result = await this.extractorManager.extract(file.path, file.extension);
+        const source = await this.db.getSourceById(file.source_id);
+        if (!source?.enabled) throw new Error('Source is no longer enabled');
+        authorizedPath = resolveSourcePath(source.path, file.path);
+        result = await this.extractorManager.extract(authorizedPath, file.extension);
       } catch (error) {
         extractError = error;
       }
@@ -118,7 +123,7 @@ export class ContentService {
       }
 
       // For images: store path for lazy loading (don't load buffer yet!)
-      const imagePath = result.content.contentType === 'image' ? file.path : undefined;
+      const imagePath = result.content.contentType === 'image' ? authorizedPath : undefined;
       if (imagePath) {
         metadata.imageMimeType = result.content.metadata?.mimeType || 'image/jpeg';
       }

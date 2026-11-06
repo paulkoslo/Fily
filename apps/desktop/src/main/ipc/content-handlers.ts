@@ -13,7 +13,7 @@ import {
 type MainWindowGetter = () => BrowserWindow | null;
 
 export function registerContentHandlers(
-  ipcMain: IpcMain,
+  ipcMain: Pick<IpcMain, 'handle'>,
   db: DatabaseManager,
   getMainWindow: MainWindowGetter
 ): void {

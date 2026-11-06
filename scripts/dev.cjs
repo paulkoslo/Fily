@@ -31,7 +31,9 @@ process.on('SIGTERM', () => stop());
   if (stopping) return server.close();
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  desktop = spawn(require('electron'), ['.'], {
+  const args = process.argv.includes('--smoke')
+    ? [path.join(root, 'scripts/smoke-desktop.cjs'), '--dev'] : ['.'];
+  desktop = spawn(require('electron'), args, {
     cwd: path.join(root, 'apps/desktop'), stdio: 'inherit', env,
   });
   desktop.on('error', (error) => {

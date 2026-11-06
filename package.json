@@ -24,11 +24,12 @@
     "rebuild": "node scripts/rebuild-native.cjs",
     "doctor": "node scripts/run-electron.cjs --node scripts/check-native.cjs",
     "smoke:desktop": "node scripts/run-electron.cjs scripts/smoke-desktop.cjs",
+    "smoke:dev": "node scripts/dev.cjs --smoke",
     "clean": "rm -rf node_modules packages/*/dist apps/*/dist apps/*/node_modules packages/*/node_modules",
     "benchmark": "npm run benchmark -w packages/core",
-    "test": "npm run build:core && npm run test -w packages/core",
+    "test": "npm run build:core && npm run build:desktop && npm run test -w packages/core && npm run test -w apps/desktop",
     "test:watch": "npm run test:watch -w packages/core",
-    "ci:check": "npm run build && npm run test -w packages/core"
+    "ci:check": "npm run build && npm run test -w packages/core && npm run test -w apps/desktop"
   },
   "engines": {
     "node": "22.x",
@@ -36,6 +37,7 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^3.7.2",
+    "esbuild": "^0.28.2",
     "typescript": "^5.3.3"
   }
 }

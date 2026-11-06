@@ -1,5 +1,6 @@
 // Database
 export * from './db';
+export * from './files';
 
 // Indexer
 export * from './indexer';

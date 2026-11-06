@@ -49,4 +49,4 @@ jobs:
 
       - name: Smoke test built renderer, preload and IPC in an isolated profile
         if: runner.os == 'macOS'
-        run: npm run smoke:desktop
+        run: npm run smoke:desktop && npm run smoke:dev

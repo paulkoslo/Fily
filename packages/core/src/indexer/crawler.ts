@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import type { DatabaseManager } from '../db';
+import { resolveSourcePath } from '../files';
 
 // Folders to exclude from indexing
 const EXCLUDED_FOLDERS = new Set([
@@ -154,6 +155,7 @@ function walkDirectoryStreaming(
 
     let entries: fs.Dirent[];
     try {
+      resolveSourcePath(sourceRoot, currentPath);
       entries = fs.readdirSync(currentPath, { withFileTypes: true });
     } catch (err) {
       // Permission denied or other error - skip this directory
@@ -198,6 +200,7 @@ function walkDirectoryStreaming(
         }
       } else if (entry.isFile()) {
         try {
+          resolveSourcePath(sourceRoot, fullPath);
           const stats = fs.statSync(fullPath);
           const extension = path.extname(entry.name).toLowerCase().slice(1);
           
