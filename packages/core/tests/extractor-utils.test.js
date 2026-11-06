@@ -96,3 +96,19 @@ test('withTimeout rejects when promise exceeds timeout', async () => {
     /Extraction timeout after 10ms/
   );
 });
+
+// A completed extraction must not keep an otherwise idle process alive for its
+// 60-second deadline. Run in a child so this checks real event-loop behavior.
+test('completed and failed extractions release their deadline timers', () => {
+  const { spawnSync } = require('node:child_process');
+  const modulePath = require.resolve('../dist/extractors/extractor-utils');
+  const child = spawnSync(process.execPath, ['-e', `
+    const { withTimeout } = require(${JSON.stringify(modulePath)});
+    (async () => {
+      await withTimeout(Promise.resolve('done'), 60000, 10000, 'synthetic');
+      await withTimeout(Promise.reject(new Error('failed')), 60000, 10000, 'synthetic').catch(() => {});
+    })();
+  `], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, timeout: 3000, encoding: 'utf8' });
+  assert.ifError(child.error);
+  assert.equal(child.status, 0, child.stderr);
+});

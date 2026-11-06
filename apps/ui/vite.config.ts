@@ -10,10 +10,12 @@ export default defineConfig(({ command }) => {
     plugins: [react(), {
       name: 'development-csp',
       apply: 'serve',
-      transformIndexHtml(html) {
+      transformIndexHtml(html, context) {
+        const address = context.server?.httpServer?.address();
+        const port = address && typeof address === 'object' ? address.port : 5180;
         return html
           .replace("script-src 'self'", `script-src 'self' 'nonce-${nonce}'`)
-          .replace("connect-src 'self'", "connect-src 'self' ws://localhost:5180");
+          .replace("connect-src 'self'", `connect-src 'self' ws://localhost:${port}`);
       },
     }],
     base: './',

@@ -123,7 +123,8 @@ npm run ci:check
 ```
 
 After building, run `npm run smoke:desktop` and `npm run smoke:dev` on macOS for
-the isolated desktop smoke tests. The development smoke test needs port 5180 free.
+the isolated desktop smoke tests. The development smoke test uses a temporary port
+and can run alongside the normal development app.
 
 ### Notes on AI testing
 
