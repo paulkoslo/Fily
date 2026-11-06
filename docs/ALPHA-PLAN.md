@@ -59,9 +59,35 @@ Implemented on `codex/desktop-security`, based on the foundation branch:
 - Both built and development desktop smoke tests exercise the sandbox, preload,
   valid IPC, hostile window IPC, forged source additions, traversal, CSP and popups.
 
-Validation: 33 core tests and four desktop tests pass, with zero skips; both
-desktop smoke modes pass. Credential encryption, dependency upgrades, migration
-backups and recoverable AI processing remain separate work.
+Published as [PR #4](https://github.com/paulkoslo/Fily/pull/4), targeting `main`
+and dependent on #3. Validation: 33 core tests and four desktop tests pass, with
+zero skips; both desktop smoke modes and GitHub's Linux/macOS checks pass.
+
+## Implementation status — encrypted credentials
+
+Implemented on `codex/credential-storage`, based on the security branch:
+
+- Settings keys use Electron safeStorage (macOS Keychain), private atomic writes
+  and a versioned schema. An unavailable/locked backend and Linux `basic_text`
+  cannot silently fall back to plaintext.
+- Legacy user-data `.env` keys are removed only after encrypted persistence and
+  decryption verification. Existing encrypted values take precedence over stale
+  legacy copies. Unrelated settings remain, and explicit project `.env` files
+  are never modified.
+- Startup waits for Electron readiness before accessing encryption. Storage
+  failures are reported through the existing Settings/key-prompt error surface.
+- Provider deletion and model changes preserve other credentials. Key validation
+  bounds input size and rejects control characters/config injection.
+- Tests use an injected test cipher and temporary profiles, covering restart,
+  migration, key precedence, locked storage, corruption, encryption/decryption
+  failures, failed atomic writes, deletion and settings preservation. They never
+  access the user's real credentials or Keychain.
+
+Validation: 33 core tests and 15 desktop tests pass (zero skips), and both built
+and development desktop smoke tests pass with isolated profiles.
+
+Dependency upgrades, database migration backups and recoverable AI processing
+remain outstanding before inviting testers.
 
 ## Product direction
 

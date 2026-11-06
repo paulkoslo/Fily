@@ -24,13 +24,6 @@ try {
   // Ignore - app may not be ready yet
 }
 
-apiKeyStore.loadEnv(packagedEnvPath);
-
-// Validate LLM API keys - priority: OPENROUTER_API_KEY > OPENAI_API_KEY
-if (!process.env.OPENROUTER_API_KEY && !process.env.OPENAI_API_KEY) {
-  console.warn('[Main] No LLM API key configured. Set OPENROUTER_API_KEY or OPENAI_API_KEY for AI features.');
-}
-
 // Set app name and userData path BEFORE any app.getPath() calls to ensure consistent paths
 app.setName('Fily');
 const userDataPath = apiKeyStore.getUserDataPath();
@@ -126,6 +119,11 @@ async function createWindow(): Promise<void> {
 }
 
 async function initializeApp(): Promise<void> {
+  // OS-backed credential encryption requires Electron's ready event.
+  apiKeyStore.loadEnv(packagedEnvPath);
+  if (!process.env.OPENROUTER_API_KEY && !process.env.OPENAI_API_KEY) {
+    console.warn('[Main] No LLM API key configured. Add a key in Settings for AI features.');
+  }
   // Initialize database
   const dbPath = getDbPath(); // getDbPath() already logs the path
   db = new DatabaseManager(dbPath);

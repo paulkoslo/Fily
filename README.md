@@ -148,6 +148,14 @@ Fily supports multiple LLM providers. You can configure your API key in two ways
 
 The app will prompt you to add an API key when you try to use AI features without one configured.
 
+Keys saved in Settings are encrypted with Electron's OS-backed storage and saved
+in the app's private `credentials.json`. On macOS the encryption key is managed
+by Keychain. Existing keys in Fily's user-data `.env` migrate only after the
+encrypted copy has been written and verified. Model settings remain separate.
+If storage is locked, unavailable, or corrupt, Fily preserves existing files and
+shows an error instead of falling back to plaintext. Unsigned development builds
+may prompt for Keychain access again after an Electron/build change.
+
 #### Option 2: Environment Variables
 
 Create a `.env` file in the project root:
@@ -166,6 +174,9 @@ LLM_MODEL=openai/gpt-5-nano
 ```
 
 **Priority**: If both keys are configured, OpenRouter takes priority.
+
+Project `.env` files and shell environment keys are externally managed. Fily
+does not rewrite them; remove a key there to stop loading it after a restart.
 
 ### Supported Models
 
@@ -302,6 +313,8 @@ Files are organized into a virtual hierarchy that makes sense based on their con
 - **Authorized IPC**: Only the main window's trusted top frame can invoke IPC.
   File opens resolve indexed IDs and canonical source boundaries; source additions
   require a recent native folder-picker selection. Navigation and popups are restricted.
+- **Credential storage**: Keys saved in the app use OS-backed encryption and
+  private atomic file writes. Linux's unprotected `basic_text` backend is rejected.
 - **Non-Destructive**: Files are never modified, moved, or deleted
 
 ## Performance
