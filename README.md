@@ -446,3 +446,32 @@ MIT
 ## Acknowledgments
 
 Fily is inspired by the need for intelligent file organization without the complexity of manual folder management. Built with Electron, React, and modern AI capabilities.
+
+### Library upgrades and recovery
+
+Before upgrading an existing library schema, Fily creates a private, verified
+SQLite snapshot beside the database in `virtual-finder.db.backups/`. On macOS,
+this is normally `~/Library/Application Support/Fily/virtual-finder.db.backups/`.
+The snapshot includes committed WAL changes. All pending migrations then run in
+one transaction; a failure rolls them back and reports the recovery backup path.
+If a backup cannot be created, the upgrade stops. A library from a newer or
+incompatible version is refused instead of being downgraded.
+
+Backups contain indexed paths, extracted content, summaries and virtual
+placements. They do not copy your original files or credentials. They remain
+local and are retained until you explicitly remove them. Initial setup and
+ordinary launches with a current schema do not create migration backups.
+
+To restore a snapshot:
+
+1. Quit every Fily instance, including development sessions.
+2. Archive the current `virtual-finder.db` and its `-wal`/`-shm` sidecars together
+   in another directory, preserving them for recovery.
+3. Copy the chosen snapshot to the original `virtual-finder.db` location. Do not
+   leave the previous database's WAL/SHM files alongside the restored snapshot.
+4. Open a compatible Fily version. If an upgrade is needed, Fily backs up the
+   restored snapshot before migrating it again.
+
+Restore is a manual recovery operation; the app never silently replaces your
+library. The regression suite verifies restoring and upgrading a snapshot using
+synthetic libraries only.

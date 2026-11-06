@@ -115,8 +115,32 @@ passing tests, both desktop smoke modes, and unsigned arm64 packaging pass.
 `npm audit` reports six moderate tooling entries, zero high/critical entries;
 CI now rejects high/critical advisories. Tests make no paid API calls.
 
-Database migration backups and recoverable AI processing remain outstanding
-before inviting testers.
+Published as [PR #6](https://github.com/paulkoslo/Fily/pull/6), targeting main
+and left unmerged. Linux/macOS checks passed.
+
+## Implementation status — library migration recovery
+
+Implemented on `codex/migration-recovery`, stacked on #6:
+
+- Existing libraries receive a private, integrity-checked `VACUUM INTO` snapshot
+  before pending schema changes. The backup includes committed WAL pages, is
+  fsynced before migrations, and stays beside the library for manual recovery.
+- All pending migrations and version records run in one immediate transaction.
+  Failure rolls back schema and data together; foreign keys are checked before
+  commit. An unavailable backup directory prevents migration entirely.
+- Future/unknown schema versions are refused. Legacy ALTER operations check
+  column existence instead of swallowing unrelated SQLite errors.
+- Failed initialization closes its database handle, and startup errors appear in
+  a native dialog. README documents the backup location and manual restore.
+- Synthetic tests cover new/current libraries, WAL data, restrictive permissions,
+  verified restore and re-upgrade, rollback, failed/symlinked backup locations,
+  unversioned databases, incompatible versions and the real v5-to-v6 upgrade.
+
+Validation: 48 core and 15 desktop tests pass, with zero skips; built and
+development desktop smoke tests pass using isolated profiles.
+
+Recoverable AI processing, extraction coverage, model evaluation and the browser
+redesign remain outstanding before inviting testers.
 
 ## Product direction
 

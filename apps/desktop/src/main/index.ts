@@ -2,7 +2,7 @@
 import * as path from 'path';
 import { pathToFileURL } from 'url';
 import * as os from 'os';
-import { app, BrowserWindow, ipcMain, nativeImage } from 'electron';
+import { app, BrowserWindow, ipcMain, nativeImage, dialog } from 'electron';
 import { DatabaseManager, WatcherManager } from '@virtual-finder/core';
 import { registerIpcHandlers } from './ipc-handlers';
 import { ApiKeyStore } from './api-key-store';
@@ -154,6 +154,8 @@ async function initializeApp(): Promise<void> {
 // App lifecycle
 app.whenReady().then(initializeApp).catch((err) => {
   console.error('Failed to initialize app:', err);
+  dialog.showErrorBox('Fily could not open your library',
+    err instanceof Error ? err.message : 'Startup failed. Your library has not been reset.');
   app.quit();
 });
 

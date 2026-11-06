@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
+import { createMigrationBackup } from './migration-backup';
 
-interface Migration {
+export interface Migration {
   version: number;
   name: string;
   up: (db: InstanceType<typeof Database>) => void;
@@ -111,15 +112,11 @@ const migrations: Migration[] = [
       db.prepare(`CREATE INDEX IF NOT EXISTS idx_folders_depth ON folders(depth)`).run();
 
       // Add relative_path and parent_path to files table for hierarchy tracking
-      try {
+      if (!hasColumn(db, 'files', 'relative_path')) {
         db.prepare(`ALTER TABLE files ADD COLUMN relative_path TEXT`).run();
-      } catch (e) {
-        // Column might already exist
       }
-      try {
+      if (!hasColumn(db, 'files', 'parent_path')) {
         db.prepare(`ALTER TABLE files ADD COLUMN parent_path TEXT`).run();
-      } catch (e) {
-        // Column might already exist
       }
 
       // Index for file hierarchy queries
@@ -134,10 +131,8 @@ const migrations: Migration[] = [
       // Add parent_source_id to sources table for virtual linking
       // When a source is nested inside another source, it links to the parent
       // instead of duplicating files. This creates a virtual filesystem view.
-      try {
+      if (!hasColumn(db, 'sources', 'parent_source_id')) {
         db.prepare(`ALTER TABLE sources ADD COLUMN parent_source_id INTEGER`).run();
-      } catch (e) {
-        // Column might already exist
       }
       db.prepare(`CREATE INDEX IF NOT EXISTS idx_sources_parent_source_id ON sources(parent_source_id)`).run();
       
@@ -168,15 +163,11 @@ const migrations: Migration[] = [
       db.prepare(`CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts)`).run();
 
       // Add status and last_seen to files table for watch mode
-      try {
+      if (!hasColumn(db, 'files', 'status')) {
         db.prepare(`ALTER TABLE files ADD COLUMN status TEXT DEFAULT 'present'`).run();
-      } catch (e) {
-        // Column might already exist
       }
-      try {
+      if (!hasColumn(db, 'files', 'last_seen')) {
         db.prepare(`ALTER TABLE files ADD COLUMN last_seen INTEGER`).run();
-      } catch (e) {
-        // Column might already exist
       }
 
       // Index for file status queries
@@ -225,33 +216,60 @@ const migrations: Migration[] = [
   },
 ];
 
-export function runMigrations(db: InstanceType<typeof Database>): void {
-  // Ensure schema_migrations table exists
-  db.prepare(`
-    CREATE TABLE IF NOT EXISTS schema_migrations (
-      version INTEGER PRIMARY KEY,
-      name TEXT NOT NULL,
-      applied_at INTEGER NOT NULL
-    )
-  `).run();
+function hasColumn(db: InstanceType<typeof Database>, table: string, column: string): boolean {
+  return (db.prepare('SELECT name FROM pragma_table_info(?)').all(table) as Array<{ name: string }>)
+    .some((row) => row.name === column);
+}
 
-  // Get applied migrations
-  const applied = new Set<number>();
-  const stmt = db.prepare(`SELECT version FROM schema_migrations`);
-  const results = stmt.all() as Array<{ version: number }>;
-  for (const row of results) {
-    applied.add(row.version);
+function appliedVersions(db: InstanceType<typeof Database>): Set<number> {
+  const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'").get();
+  if (!exists) return new Set();
+  return new Set((db.prepare('SELECT version FROM schema_migrations').all() as Array<{ version: number }>)
+    .map((row) => row.version));
+}
+
+/** Back up an existing library before any schema changes, then apply all changes atomically. */
+export function runMigrations(
+  db: InstanceType<typeof Database>,
+  definitions: readonly Migration[] = migrations
+): string | undefined {
+  const known = new Set(definitions.map((migration) => migration.version));
+  if (known.size !== definitions.length || definitions.some((migration, index) =>
+    !Number.isSafeInteger(migration.version) || migration.version <= 0 ||
+    (index > 0 && migration.version <= definitions[index - 1].version))) {
+    throw new Error('Migration definitions must have unique, increasing positive versions');
   }
-
-  // Apply pending migrations
-  for (const migration of migrations) {
-    if (!applied.has(migration.version)) {
-      console.log(`Applying migration ${migration.version}: ${migration.name}`);
-      migration.up(db);
-      db.prepare(`
-        INSERT INTO schema_migrations (version, name, applied_at)
-        VALUES (?, ?, ?)
-      `).run(migration.version, migration.name, Date.now());
+  const assertSupported = (versions: Set<number>) => {
+    if ([...versions].some((version) => !known.has(version))) {
+      throw new Error('This library was created by a newer or incompatible Fily version. Open it with that version.');
     }
+  };
+  const applied = appliedVersions(db);
+  assertSupported(applied);
+  if (definitions.every((migration) => applied.has(migration.version))) return;
+
+  const hasLibrary = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1").get();
+  const backup = hasLibrary ? createMigrationBackup(db, Math.max(0, ...applied)) : undefined;
+  try {
+    db.transaction(() => {
+      // Re-read under the write lock in case another process upgraded meanwhile.
+      const current = appliedVersions(db);
+      assertSupported(current);
+      db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+        version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL
+      )`);
+      for (const migration of definitions) {
+        if (current.has(migration.version)) continue;
+        console.log(`Applying migration ${migration.version}: ${migration.name}`);
+        migration.up(db);
+        db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)')
+          .run(migration.version, migration.name, Date.now());
+      }
+      const foreignKeyErrors = db.pragma('foreign_key_check') as unknown[];
+      if (foreignKeyErrors.length > 0) throw new Error('Migration failed foreign key validation');
+    }).immediate();
+  } catch (error) {
+    throw new Error(`Library upgrade failed; changes were rolled back.${backup ? ` Recovery backup: ${backup}` : ''}`, { cause: error });
   }
+  return backup;
 }
