@@ -173,8 +173,14 @@ export type SmartSearchResult = z.infer<typeof SmartSearchResultSchema>;
 
 // openFile
 export const OpenFileRequestSchema = z.object({
-  path: z.string(),
-});
+  fileId: z.string().min(1).max(128),
+}).strict();
+
+export const OpenFolderRequestSchema = z.object({
+  sourceId: z.number().int().positive(),
+  relativePath: z.string().max(4096).optional(),
+}).strict();
+export type OpenFolderRequest = z.infer<typeof OpenFolderRequestSchema>;
 
 export const OpenFileResponseSchema = z.object({
   success: z.boolean(),

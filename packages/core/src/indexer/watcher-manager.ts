@@ -3,6 +3,7 @@ import { SourceWatcher, type NormalizedWatchEvent } from './watcher';
 import * as fs from 'fs';
 import * as path from 'path';
 import { computeFileId } from './crawler';
+import { resolveSourcePath, isPathWithinSource } from '../files';
 
 /**
  * WatcherManager - Manages multiple SourceWatcher instances.
@@ -128,20 +129,17 @@ export class WatcherManager {
    */
   private async handleFileAddedOrChanged(filePath: string, sourceId: number): Promise<void> {
     try {
+      const source = await this.db.getSourceById(sourceId);
+      if (!source?.enabled) return;
       // Check if file exists
       if (!fs.existsSync(filePath)) {
         return; // File was deleted before we could process it
       }
 
-      const stats = fs.statSync(filePath);
+      const authorizedPath = resolveSourcePath(source.path, filePath);
+      const stats = fs.statSync(authorizedPath);
       if (!stats.isFile()) {
         return; // Not a file (might be a directory)
-      }
-
-      // Get source to compute relative path
-      const source = await this.db.getSourceById(sourceId);
-      if (!source) {
-        return;
       }
 
       const relativePath = path.relative(source.path, filePath);
@@ -180,6 +178,8 @@ export class WatcherManager {
    */
   private async handleFileDeleted(filePath: string, sourceId: number): Promise<void> {
     try {
+      const source = await this.db.getSourceById(sourceId);
+      if (!source || !isPathWithinSource(path.resolve(source.path), path.resolve(filePath))) return;
       // Try watched source first (fast - uses source_id index)
       let fileRecord = await this.db.getFileByPath(sourceId, filePath);
       

@@ -282,11 +282,14 @@ export class DatabaseManager {
   }
 
   private getPathScopeSql(column: string): string {
-    return `(${column} = ? OR ${column} LIKE ? OR ${column} LIKE ?)`;
+    // INSTR treats %, _, case and backslashes literally. LIKE is case-insensitive
+    // by default and can include a different source on case-sensitive volumes.
+    return `(${column} = ? OR INSTR(${column}, ?) = 1 OR INSTR(${column}, ?) = 1)`;
   }
 
   private getPathScopeParams(sourcePath: string): [string, string, string] {
-    return [sourcePath, `${sourcePath}/%`, `${sourcePath}\\%`];
+    const prefix = sourcePath.replace(/[\\/]+$/, '');
+    return [sourcePath, `${prefix}/`, `${prefix}\\`];
   }
 
   async getNestedChildSources(parentSourceId: number): Promise<Source[]> {

@@ -1,10 +1,12 @@
 // Electron app main process
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 import * as os from 'os';
 import { app, BrowserWindow, ipcMain, nativeImage } from 'electron';
 import { DatabaseManager, WatcherManager } from '@virtual-finder/core';
 import { registerIpcHandlers } from './ipc-handlers';
 import { ApiKeyStore } from './api-key-store';
+import { secureWindow } from './security';
 
 // Initialize API key storage and load environment variables
 const apiKeyStore = new ApiKeyStore({
@@ -65,7 +67,7 @@ function getRendererUrl(): string {
   }
   // In production, load from built files
   const rendererPath = path.join(process.resourcesPath, 'ui', 'index.html');
-  return `file://${rendererPath}`;
+  return pathToFileURL(rendererPath).href;
 }
 
 /** Path to app icon (assets/icons/Icon.icns). Used in dev for dock/window; in prod the .app bundle provides the icon. */
@@ -92,7 +94,7 @@ async function createWindow(): Promise<void> {
       preload: getPreloadPath(),
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: false,
+      sandbox: true,
     },
   });
   if (icon && !icon.isEmpty()) {
@@ -101,6 +103,7 @@ async function createWindow(): Promise<void> {
 
   // Load the renderer
   const url = getRendererUrl();
+  secureWindow(mainWindow, url);
   console.log(`Loading renderer from: ${url}`);
 
   // In dev builds we used to always auto-open DevTools.
@@ -144,7 +147,7 @@ async function initializeApp(): Promise<void> {
   }
 
   // Register IPC handlers
-  registerIpcHandlers(ipcMain, db, () => mainWindow, watcherManager, apiKeyStore);
+  registerIpcHandlers(ipcMain, db, () => mainWindow, watcherManager, apiKeyStore, getRendererUrl());
 
   // Create the main window
   await createWindow();

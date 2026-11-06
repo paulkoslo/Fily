@@ -15,6 +15,8 @@ import {
   ListFoldersResponseSchema,
   GetFolderTreeResponseSchema,
   OpenFileRequestSchema,
+  OpenFolderRequestSchema,
+  type OpenFolderRequest,
   OpenFileResponseSchema,
   GetSourcesResponseSchema,
   AddSourceRequestSchema,
@@ -102,7 +104,7 @@ import {
   type GetLLMModelResponse,
   type SaveLLMModelRequest,
   type SaveLLMModelResponse,
-} from '@virtual-finder/core';
+} from '@virtual-finder/core/ipc';
 
 /**
  * Type-safe IPC wrapper with zod validation.
@@ -292,10 +294,10 @@ const api = {
   /**
    * Open a folder in Finder.
    */
-  openFolder: (request: OpenFileRequest): Promise<OpenFileResponse> => {
+  openFolder: (request: OpenFolderRequest): Promise<OpenFileResponse> => {
     return invoke(
       IPC_CHANNELS.OPEN_FOLDER,
-      OpenFileRequestSchema,
+      OpenFolderRequestSchema,
       OpenFileResponseSchema,
       request
     );

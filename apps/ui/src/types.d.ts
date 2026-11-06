@@ -127,7 +127,12 @@ declare global {
   }
 
   interface OpenFileRequest {
-    path: string;
+    fileId: string;
+  }
+
+  interface OpenFolderRequest {
+    sourceId: number;
+    relativePath?: string;
   }
 
   interface OpenFileResponse {
@@ -431,7 +436,7 @@ declare global {
     listFolders: (request: ListFoldersRequest) => Promise<ListFoldersResponse>;
     getFolderTree: (request: ListFoldersRequest) => Promise<GetFolderTreeResponse>;
     openFile: (request: OpenFileRequest) => Promise<OpenFileResponse>;
-    openFolder: (request: OpenFileRequest) => Promise<OpenFileResponse>;
+    openFolder: (request: OpenFolderRequest) => Promise<OpenFileResponse>;
     getMemoryUsage: () => Promise<GetMemoryUsageResponse>;
     onFileChanged: (callback: (event: FileChangedEvent) => void) => () => void;
     getWatchStatus: (request?: GetWatchStatusRequest) => Promise<GetWatchStatusResponse>;

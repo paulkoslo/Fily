@@ -12,7 +12,7 @@ import {
 } from '@virtual-finder/core';
 
 export function registerVirtualTreeHandlers(
-  ipcMain: IpcMain,
+  ipcMain: Pick<IpcMain, 'handle'>,
   db: DatabaseManager
 ): void {
   // Get virtual tree

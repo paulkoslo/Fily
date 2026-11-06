@@ -20,7 +20,7 @@ import {
 type MainWindowGetter = () => BrowserWindow | null;
 
 export function registerPlannerHandlers(
-  ipcMain: IpcMain,
+  ipcMain: Pick<IpcMain, 'handle'>,
   db: DatabaseManager,
   getMainWindow: MainWindowGetter
 ): void {

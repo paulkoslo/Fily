@@ -15,6 +15,7 @@ import {
   type SmartSearchFilesResponse,
   ListFoldersRequestSchema,
   OpenFileRequestSchema,
+  OpenFolderRequestSchema,
   AddSourceRequestSchema,
   RemoveSourceRequestSchema,
   PreviewSourceDeletionRequestSchema,
@@ -56,14 +57,19 @@ import { openFile } from './file-opener';
 import { registerContentHandlers } from './ipc/content-handlers';
 import { registerVirtualTreeHandlers } from './ipc/virtual-tree-handlers';
 import { registerPlannerHandlers } from './ipc/planner-handlers';
+import { guardIpc } from './security';
+import { SourceSelectionGrants, resolveIndexedFile, resolveSourceFolder } from './source-access';
 
 export function registerIpcHandlers(
-  ipcMain: IpcMain,
+  rawIpcMain: Pick<IpcMain, 'handle'>,
   db: DatabaseManager,
   getMainWindow: () => BrowserWindow | null,
   watcherManager: WatcherManager,
-  apiKeyStore: ApiKeyStore
+  apiKeyStore: ApiKeyStore,
+  rendererUrl: string
 ): void {
+  const ipcMain = guardIpc(rawIpcMain, getMainWindow, rendererUrl);
+  const selections = new SourceSelectionGrants();
   const normalizePathForComparison = (inputPath: string): string => {
     try {
       return fs.realpathSync.native(inputPath);
@@ -122,7 +128,7 @@ export function registerIpcHandlers(
         return { success: true, cancelled: true };
       }
 
-      const folderPath = result.filePaths[0];
+      const folderPath = selections.grant(result.filePaths[0]);
       const folderName = path.basename(folderPath);
 
       return {
@@ -153,7 +159,8 @@ export function registerIpcHandlers(
           };
         }
 
-        const { name, path: sourcePath } = parsed.data;
+        const { name } = parsed.data;
+        const sourcePath = selections.consume(parsed.data.path);
 
         // Check if source already exists
         const existing = await db.getSourceByPath(sourcePath);
@@ -555,7 +562,7 @@ export function registerIpcHandlers(
     IPC_CHANNELS.OPEN_FOLDER,
     async (_event, request: unknown): Promise<OpenFileResponse> => {
       try {
-        const parsed = OpenFileRequestSchema.safeParse(request);
+        const parsed = OpenFolderRequestSchema.safeParse(request);
         if (!parsed.success) {
           return {
             success: false,
@@ -563,7 +570,7 @@ export function registerIpcHandlers(
           };
         }
 
-        const { path: folderPath } = parsed.data;
+        const folderPath = await resolveSourceFolder(db, parsed.data.sourceId, parsed.data.relativePath);
         shell.showItemInFolder(folderPath);
 
         return { success: true };
@@ -691,7 +698,7 @@ export function registerIpcHandlers(
           };
         }
 
-        const { path: filePath } = parsed.data;
+        const filePath = await resolveIndexedFile(db, parsed.data.fileId);
 
         // Open file with default application
         await openFile(filePath);

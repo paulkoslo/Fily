@@ -34,11 +34,34 @@ Implemented on branch `codex/alpha-foundation`:
 Local validation: clean dependency installation, SQLite doctor, core/UI/desktop
 builds, 30 passing tests with zero skips, and an isolated desktop smoke test that
 renders the built UI and exercises preload/IPC against a synthetic library.
-GitHub-hosted CI has not been run from this local branch.
+Published as [PR #3](https://github.com/paulkoslo/Fily/pull/3), targeting `main`.
+GitHub-hosted Linux and macOS checks passed. The PR remains unmerged.
 
 This is the development/correctness milestone. Dependency security upgrades,
 renderer/IPC hardening, resumable AI jobs, extraction/OCR, Jev evaluation, and the
 browser redesign remain outstanding before inviting alpha testers.
+
+## Implementation status — desktop security boundary
+
+Implemented on `codex/desktop-security`, based on the foundation branch:
+
+- Sandboxed renderer and bundled contracts-only preload; only Electron remains an
+  external preload import. A build check rejects accidental Node/native imports.
+- Every IPC handler verifies the expected window, main frame, and exact renderer
+  URL. Navigation, new windows, embedded webviews and permission requests are restricted.
+- File opens accept indexed IDs, and folder reveals accept source-relative paths.
+  Canonical path checks reject traversal and escaping symlinks. Extraction, crawling,
+  and watcher indexing also check source boundaries.
+- Adding a source requires a short-lived, single-use grant from the native picker.
+- Database source-prefix queries treat case and wildcard characters literally.
+- Production CSP disallows inline scripts. Development uses a per-server nonce
+  for Vite's bootstrap and permits only its local hot-reload connection.
+- Both built and development desktop smoke tests exercise the sandbox, preload,
+  valid IPC, hostile window IPC, forged source additions, traversal, CSP and popups.
+
+Validation: 33 core tests and four desktop tests pass, with zero skips; both
+desktop smoke modes pass. Credential encryption, dependency upgrades, migration
+backups and recoverable AI processing remain separate work.
 
 ## Product direction
 

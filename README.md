@@ -108,10 +108,11 @@ On every push and pull request, CI runs:
 
 1. `npm ci` (all workspaces and the native Electron binding)
 2. `npm run doctor` (SQLite verification in Electron's runtime)
-3. `npm run ci:check` (core, UI and desktop builds, followed by all core tests,
-   including mandatory SQLite integration tests)
-4. On macOS, `npm run smoke:desktop` loads the built UI, preload, database and IPC
-   using a temporary profile and synthetic document, without reading normal user data
+3. `npm run ci:check` (core, UI and desktop builds, followed by core and desktop
+   tests, including mandatory SQLite integration and security tests)
+4. On macOS, `npm run smoke:desktop` and `npm run smoke:dev` exercise the built
+   and development UIs in isolated profiles, including renderer sandboxing,
+   unauthorized IPC, CSP and source boundaries
 
 ### Local CI command
 
@@ -121,7 +122,8 @@ Run exactly what CI runs:
 npm run ci:check
 ```
 
-After building, run `npm run smoke:desktop` on macOS for the isolated desktop smoke test.
+After building, run `npm run smoke:desktop` and `npm run smoke:dev` on macOS for
+the isolated desktop smoke tests. The development smoke test needs port 5180 free.
 
 ### Notes on AI testing
 
@@ -295,8 +297,11 @@ Files are organized into a virtual hierarchy that makes sense based on their con
   mean offline AI processing. Choose source folders accordingly; finer-grained
   disclosure and exclusion controls are part of the alpha plan.
 - **Secure IPC**: All inter-process communication validated with Zod schemas
-- **Isolated Renderer**: Node integration is disabled and context isolation is on.
-  Renderer process sandboxing and stricter IPC authorization remain alpha-plan work.
+- **Sandboxed Renderer**: Node integration is disabled, context isolation and
+  process sandboxing are enabled, and the preload bundles only IPC contracts.
+- **Authorized IPC**: Only the main window's trusted top frame can invoke IPC.
+  File opens resolve indexed IDs and canonical source boundaries; source additions
+  require a recent native folder-picker selection. Navigation and popups are restricted.
 - **Non-Destructive**: Files are never modified, moved, or deleted
 
 ## Performance

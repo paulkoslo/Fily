@@ -724,7 +724,7 @@ function App() {
 
   const handleFileDoubleClick = useCallback(async (file: FileRecord) => {
     try {
-      const response = await window.api.openFile({ path: file.path });
+      const response = await window.api.openFile({ fileId: file.file_id });
       if (!response.success) {
         setError(response.error || 'Failed to open file');
       }
